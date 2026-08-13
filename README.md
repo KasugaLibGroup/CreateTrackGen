@@ -1,0 +1,155 @@
+# create_track_gen — 机械动力轨道生成插件
+
+Blockbench 插件：根据玩家提供的 **左轨 / 右轨 / 枕木** 三个零件模型，输入轨距、轨道高度与整体 Y 偏移，
+自动生成符合机械动力（Create Mod）轨道规范的 **16 种形状**（直轨 / 45° 斜轨 / 4 向上升 / 2 向传送门 / 6 种交叉），
+并把玩家输入的轨距换算成 Create 用于计算弯道的**比例常数**（二次拟合曲线）。
+可选分别导入两张传送门纹理（`portal_track.png` / `portal_track_mip.png`）：`portal_track` 铺轨道/枕木（缺省用零件默认纹理）；`portal_track_mip` 生成左右两个覆层块 `teleport_left` / `teleport_right` 把枕木左/右半边包住（不包含钢轨）并贴 mip（缺省不生成）。两者都缺省时传送门轨道与 `z_ortho` / `x_ortho` 一致（结构参照 Create 原版 `teleport.json`）。
+
+## 功能
+
+- **生成轨道模型组**：`工具 → 机械动力轨道生成`
+  - 依次提供 左轨 / 右轨 / 枕木 三个零件（从磁盘导入 `.bbmodel`，或「选择一个标签页」从当前打开的标签页里提取已选中的元素）
+  - 三个零件的**纹理分辨率必须一致**，否则拒绝生成
+  - 输入轨距（px，1/16 方块，Create 默认 1600mm ≈ 25.6px，支持毫米/英寸换算）、轨道高度（px）与整个模型的 Y 偏移（px，默认 0）
+  - 可选分别点击「导入 portal_track…」与「导入 portal_track_mip…」：`portal_track` 铺 `teleport` / `teleport_x` 的轨道/枕木（缺省用零件默认纹理）；`portal_track_mip` 生成左右两个覆层块（`teleport_left` / `teleport_right`，包裹枕木左/右半边、不含钢轨）并贴 mip（缺省不生成）
+  - 指定新工作区名称；结果自动生成到**新建的独立工作区**（模型选项卡），并把三个零件的纹理导入、应用到对应组
+  - 自动生成 16 种形状：`z_ortho / x_ortho / diag / diag_2 / ascending_东南西北 / teleport / teleport_x / cross_ortho / cross_diag / cross_d1_xo / cross_d1_zo / cross_d2_xo / cross_d2_zo`
+  - **弯道渲染基础分组**：额外生成 `tie` / `segment_left` / `segment_right` 三个顶层分组（Create 曲线渲染用的三个模型），各含对应零件（cube + mesh 组），并排成**轨道单元布局**：两条钢轨各自以自身模型中心为轴、中心 x 坐标归零（Java 模型中心的 (8,8) / 其他格式的 (0,0) 都平移到 x=0，同 Create 的 segment_left/right.obj），近 z 端靠在 xy 平面（z=0），钢轨底面抬升到 轨道高度 + 整体 Y 偏移；枕木移到 z_ortho 中靠近 x 轴的第一个枕木位置（z=4），仅加整体 Y 偏移（不抬升）。钢轨之间的 ±轨距/2 间距由 Create 在渲染时摆放
+  - **工作区格式自动判定**：任一零件含 mesh 组（`.bbmodel` 的 `type:"mesh"` 元素）→ 新工作区为**自由模型**（generic）；否则为 **Java 方块/物品模型**
+- **轨距换算**：`工具 → 轨距换算`，输入 mm 输出 Create 弯道比例常数
+  - 锚点：1435mm→0.755、1600mm→0.965、1000mm→0.525（二次多项式拟合）
+
+## 技术栈
+
+| 组件 | 说明 |
+| --- | --- |
+| TypeScript | 源码语言，`src/` 目录 |
+| esbuild | 打包器，把多模块源码打包成单个插件 `.js` 文件 + 单测用 CJS 产物 |
+| blockbench-types | Blockbench API 官方类型，提供自动补全 + 类型检查 |
+
+## 目录结构
+
+```
+create_track_gen/
+├── src/
+│   ├── index.ts           # 插件入口：Plugin.register + 菜单 + Undo 事务 + onunload 清理
+│   ├── constants.ts       # 轨距换算锚点、默认参数
+│   ├── logic/             # ★ 纯逻辑层（零 Blockbench 依赖，Node 可单测）
+│   │   ├── types.ts       # CubeSpec / ShapeSpec / TrackConfig 纯类型
+│   │   ├── gauge.ts       # 轨距二次拟合 + mm↔px 换算
+│   │   ├── parts.ts       # .bbmodel 解析 + 归一化（底面 y=0、中线 x=0）
+│   │   ├── transform.ts   # 平移 / 抬升 / 绕 Y/X 旋转（纯函数）
+│   │   └── generator.ts   # 16 种形状组装（核心）
+│   ├── build/
+│   │   ├── assembly.ts    # CubeSpec[] → 真实 Cube/Group（唯一依赖 Blockbench 树）
+│   │   └── workspace.ts   # 新建工作区 + 导入零件纹理（newProject / Texture）
+│   └── ui/
+│       ├── import.ts      # 磁盘导入 .bbmodel / 选择一个标签页提取选中元素
+│       └── dialog.ts      # 单页配置对话框（零件来源 + 参数 + 传送门纹理）
+├── build.mjs              # esbuild 打包（插件 IIFE + logic CJS 次产物）
+├── create_track_gen.js    # 构建产物，拖进 Blockbench 即可加载
+├── test/
+│   ├── logic.test.js      # 纯逻辑单测（轨距/解析/变换/组装）
+│   ├── smoke.js           # 冒烟测试（桩 Blockbench API 跑产物）
+│   └── sample_parts/      # 示例零件（left_rail/right_rail/tie .bbmodel）
+└── package.json
+```
+
+## 开发流程
+
+```bash
+npm install          # 首次安装依赖
+npm run dev          # 类型检查 + 构建一次
+npm run typecheck    # 仅类型检查
+npm run build        # 构建
+npm run watch        # 监听 src/ 变化，自动重建 create_track_gen.js
+npm test             # typecheck + build + logic 单测 + smoke 冒烟
+```
+
+## 在 Blockbench 中测试
+
+### 第 1 步：构建插件
+
+```bash
+npm run build
+```
+
+确保项目根目录出现 `create_track_gen.js`。
+
+### 第 2 步：加载插件
+
+1. 打开 **Blockbench**（桌面版，建议 5.x）。
+2. 新建一个 Java Block 项目：`文件 → 新建 → Java Block/Item`。
+3. 把 `create_track_gen.js` 拖进 Blockbench 窗口（或 `文件 → 打开 → 插件` 选择该文件）。
+4. 菜单栏应出现 `工具` 菜单，其下有 **「机械动力轨道生成」** 和 **「轨距换算」**。
+
+> 重载插件：修改源码重新 `npm run build` 后，在 Blockbench 按 **Ctrl/Cmd + J**。
+
+### 第 3 步：准备零件（二选一）
+
+**方式 A：导入示例零件（推荐，直接跑通）**
+
+使用 `test/sample_parts/` 下的三个文件：`left_rail.bbmodel`、`right_rail.bbmodel`、`tie.bbmodel`。
+
+**方式 B：用你自己的零件**
+
+三个零件必须满足：
+- 均为 Java Block 格式（`.bbmodel`）
+- 底面在 xz 平面（y=0）
+- 左轨 / 右轨 / 枕木 各是一个模型文件（或当前项目里选中的一组元素）
+
+**对称点规定**（归一化基准，按模型格式自动判断）：
+- **Java Block / Item**（`java_block` / `java_item`）：对称点为 xz 平面的 **(8, 8)** —— 因为该模式画布是 0..16，原点在角上，模型中心在 (8,8)。零件可以在 0..16 画布内做大，不受"关于零点对称"的尺寸限制。
+- **其他格式**（generic / free 等）：对称点为 xz 平面的 **(0, 0)** —— 原点即画布中心。
+
+插件归一化时会把对称点平移到原点，再把左右轨按轨距 ±g/2 摆放，因此零件本身是否精确居中不影响最终结果。
+
+**轨距的度量方式**：`gaugePx` 是**左右钢轨中心之间的距离**（Create 默认标称轨距 1600mm，按「1 格方块 = 1 米 = 16px」换算为 **25.6px**）。因此钢轨零件的宽度应当明显小于轨距，否则两条钢轨会贴在一起。Create 官方的 `segment_left.obj` / `segment_right.obj`（宽约 2.4px、高约 4.5px）配合默认轨距 25.6px 即可得到正确的 25.6px 中心距轨道。
+
+**轨道长度**：默认生成一个完整方块（16px）。钢轨零件长度不足时会沿铺设方向自动平铺补齐（Create 的钢轨段是 8px 的半块段，一个方块需要两块）。枕木按间距沿整条轨道铺设，不会再因为钢轨零件过短而消失。
+
+**纹理一致性**：左轨 / 右轨 / 枕木三个零件的纹理分辨率（图片像素尺寸）必须完全一致，否则会弹出「纹理分辨率不一致」并拒绝生成。生成时会把三个零件的纹理自动导入新工作区，并应用到对应元素的面（左轨贴左轨纹理、右轨贴右轨纹理、枕木贴枕木纹理）。
+
+**mesh 组**：零件可以是纯 cube（Java 方块模型），也可以含 mesh 组（如从 Create 的 `.obj` 导入的模型）。任一零件含 mesh 组时，新工作区为**自由模型**；mesh 组被搬进 `tie` / `segment_left` / `segment_right` 基础分组（不参与 16 种轨道形状的组装，那些形状仍由 cube 部分生成）。插件会把 mesh 的 origin（世界锚点）与 rotation 烘焙进顶点，因此带非零 origin 的 mesh（如 Java 模型的 origin (8,8,8)）也能正确定位到 x=0。
+
+### 第 4 步：运行生成
+
+1. 点击 `工具 → 机械动力轨道生成`。
+2. 依次按提示选择「左轨」「右轨」「枕木」的来源：
+   - 选 **导入文件** → 弹出文件框 → 选对应 `.bbmodel`
+   - 或选 **选择一个标签页…** → 从当前打开的标签页列表里选一个，插件提取该标签页中已选中的元素作为零件（先在目标标签页里 outliner 框选该零件的全部元素）
+3. 输入 **轨距**（px，示例用 25.6 ≈ 1600mm）、**轨道高度**（px，示例用 2）与 **整个模型的 Y 偏移**（px，示例用 0）。毫米/英寸字段输入后回车可自动换算回 px。
+4. 输入 **新工作区名称**（示例用「机械动力轨道」）。生成结果会放入这个**新建的工作区**（模型选项卡），不污染当前工作区；工作区纹理分辨率自动设为零件纹理的尺寸。
+5. 等待生成完成，新工作区的 outliner 出现父分组 **「机械动力轨道」**，内含 16 个子分组，各组的立方体已贴上对应零件纹理；另有两个顶层分组 **`segment_left` / `segment_right` / `tie`**（弯道渲染基础模型）。
+6. 新工作区的模型格式由零件决定：**任一零件含 mesh 组 → 自由模型**；否则为 **Java Block/Item 模型**（mesh 组无法存在于 Java 模型，只能放进自由模型）。
+
+### 第 5 步：验证结果
+
+- **直轨**：展开 `z_ortho` 分组，左右钢轨中心距应 = 轨距（默认 25.6px）。
+- **斜轨**：`diag` 分组的元素带 45° Y 旋转（选中元素看右侧属性面板的旋转）。
+- **上升**：`ascending_*` 分组的元素带 -45° X 旋转，枢轴在方块中心（Java 画布 xz (8,8)）。
+- **弯道基础分组**：工作区顶层有 `segment_left` / `segment_right` / `tie` 三个分组，分别对应左轨 / 右轨 / 枕木零件（Create 曲线渲染用）。左/右轨道各自以自身中心为轴（中心 x 归零）、近 z 端在 z=0、底面在 轨道高度 + Y 偏移；枕木在 z=4（第一个枕木位置）、底面仅 +Y 偏移。
+- **纹理**：左轨 / 右轨 / 枕木元素应分别贴有自己的纹理（纹理列表里有导入的零件贴图，UV 编辑器可查看）。
+- **传送门/交叉**：`teleport*` 分组含直轨（导入 `portal_track` 则铺它，否则用零件默认纹理）+ 左右两个覆层块 `teleport_left` / `teleport_right`（导入 `portal_track_mip` 才生成，包裹枕木半边、贴 mip、不含钢轨）；都未导入时与 `z_ortho` / `x_ortho` 一致。`cross_*` 分组含交叉元素。
+- **轨距换算**：`工具 → 轨距换算`，输入 1435 → 应得 ≈0.755；输入 1600 → ≈0.965。
+
+## 轨道尺寸参考来源
+
+生成器的几何参数提取自 Create 官方源码仓库（`Creators-of-Create/Create`, mc1.20.1/dev 分支）
+与 `assets/tracks/`（Kuayue mod）参考资产：
+
+- `assets/tracks/standard/models/block/track/standard/diag_template.json` — 45° 斜轨旋转方案
+- `assets/tracks/standard/models/block/track/standard/ascending_template.json` — 上升坡度旋转方案
+- `assets/tracks/standard/models/block/track/standard/x_ortho.json` — 直轨布局
+- `assets/tracks/standard/models/block/track/standard/cross_ortho.json` — 正交交叉
+- `assets/tracks/standard/models/block/track/standard/tie.obj` / `segment_left.obj` / `segment_right.obj` — 弯道渲染基础模型（生成工作区里的 `tie` / `segment_left` / `segment_right` 三个分组对应）
+- Create 源码 `TrackModel.java` — 上升轨道的程序化变换（垂直偏移 -0.25、绕 Z 旋转坡度角）
+
+## 提交到插件商店（可选）
+
+如需公开发布，将插件提交到 [blockbench-plugins](https://github.com/JannisX11/blockbench-plugins) 仓库，按 [README 要求](https://github.com/JannisX11/blockbench-plugins#readme) 在 `/plugins` 下添加插件文件并更新 `plugins.json`。
+
+## 官方文档
+
+- [Blockbench 插件开发指南](https://www.blockbench.net/wiki/docs/plugin/)
+- [Blockbench API 参考](https://web.blockbench.net/docs)

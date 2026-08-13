@@ -1,0 +1,27 @@
+{
+  "name": "create_track_gen",
+  "version": "0.1.0",
+  "description": "Blockbench 插件：自动生成机械动力（Create Mod）轨道模型",
+  "main": "create_track_gen.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run build && node test/logic.test.js && node test/smoke.js",
+    "dev": "npm run typecheck && npm run build"
+  },
+  "keywords": [
+    "blockbench",
+    "plugin",
+    "create-mod",
+    "minecraft"
+  ],
+  "author": "Your Name",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "blockbench-types": "^5.1.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

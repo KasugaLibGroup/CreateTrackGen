@@ -23,10 +23,10 @@ import enJson from '../lang/en.json';
 import zhJson from '../lang/zh.json';
 
 /** 单条翻译：key → 文案（%0/%1… 占位符） */
-export type TranslationDict = Record<string, string>;
+type TranslationDict = Record<string, string>;
 
 /** 全部插件文案（内置默认 = 打包的 lang/*.json）；运行时可按磁盘 JSON 覆盖 */
-export const TRANSLATIONS: Record<'en' | 'zh', TranslationDict> = { en: enJson, zh: zhJson };
+const TRANSLATIONS: Record<'en' | 'zh', TranslationDict> = { en: enJson, zh: zhJson };
 
 /** 当前语言 code（Node 无 Language 全局时按英文处理；其他语言回退英文） */
 function currentLang(): 'en' | 'zh' {

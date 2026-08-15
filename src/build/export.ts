@@ -242,16 +242,14 @@ function shapeTextures(elements: ExportElement[], infos: ExportTexture[]): Expor
 	return infos.filter((tex) => keys.has(tex.key));
 }
 
-/** 写一张纹理 PNG（按绝对路径去重，只写一次） */
+/** 写一张纹理 PNG（按绝对路径去重，只写一次）。不再检测纹理尺寸——生成阶段已校验过零件纹理一致性。 */
 function writeTexturePng(
 	fs: ExportFs,
 	dir: string,
 	tex: ExportTexture,
 	files: string[],
 	warnings: string[],
-	writtenTextures: Set<string>,
-	projW: number,
-	projH: number
+	writtenTextures: Set<string>
 ): void {
 	if (!tex.dataUrl || !tex.dataUrl.startsWith('data:')) {
 		warnings.push(t('ctg.export.texture_no_data', tex.resName));
@@ -263,9 +261,6 @@ function writeTexturePng(
 		fs.mkdirSync(dir, { recursive: true });
 		fs.writeFileSync(abs, dataUrlToBytes(tex.dataUrl));
 		files.push(abs);
-	}
-	if (tex.width !== projW || tex.height !== projH) {
-		warnings.push(t('ctg.export.texture_size_warn', [tex.resName, tex.width, tex.height, projW, projH]));
 	}
 }
 
@@ -847,7 +842,7 @@ export function writeTrackExport(opts: ExportOptions & {
 			fs.writeFileSync(joinPath(modelDir, `${shape}.mtl`), objRes.mtl);
 			fs.writeFileSync(joinPath(modelDir, file), JSON.stringify(buildObjReferenceJson({ namespace, trackId, shape, textures: shapeTexs, texturePathOf: texturePaths, modelPath }), null, '\t'));
 			files.push(joinPath(modelDir, `${shape}.obj`), joinPath(modelDir, `${shape}.mtl`), joinPath(modelDir, file));
-			for (const tex of shapeTexs) writeTexturePng(fs, textureDirOf(tex.key), tex, files, warnings, writtenTextures, projW, projH);
+			for (const tex of shapeTexs) writeTexturePng(fs, textureDirOf(tex.key), tex, files, warnings, writtenTextures);
 			if (mode === 'bedrock') {
 				warnings.push(t('ctg.export.bedrock_fallback', id));
 			}
@@ -858,7 +853,7 @@ export function writeTrackExport(opts: ExportOptions & {
 			fs.mkdirSync(modelDir, { recursive: true });
 			fs.writeFileSync(joinPath(modelDir, file), JSON.stringify(geo, null, '\t'));
 			files.push(joinPath(modelDir, file));
-			for (const tex of shapeTexs) writeTexturePng(fs, textureDirOf(tex.key), tex, files, warnings, writtenTextures, projW, projH);
+			for (const tex of shapeTexs) writeTexturePng(fs, textureDirOf(tex.key), tex, files, warnings, writtenTextures);
 			if (shapeTexs[0]) bedrockShapes.push({ id, texturePath: `${texturePaths[shapeTexs[0].key] ?? modelPath}/${shapeTexs[0].resName}` });
 		} else {
 			// ── Java JSON（经典 / 新）──
@@ -866,7 +861,7 @@ export function writeTrackExport(opts: ExportOptions & {
 			fs.mkdirSync(modelDir, { recursive: true });
 			fs.writeFileSync(joinPath(modelDir, file), JSON.stringify(json, null, '\t'));
 			files.push(joinPath(modelDir, file));
-			for (const tex of shapeTexs) writeTexturePng(fs, textureDirOf(tex.key), tex, files, warnings, writtenTextures, projW, projH);
+			for (const tex of shapeTexs) writeTexturePng(fs, textureDirOf(tex.key), tex, files, warnings, writtenTextures);
 		}
 	}
 
@@ -875,10 +870,11 @@ export function writeTrackExport(opts: ExportOptions & {
 		fs.writeFileSync(joinPath(root, 'blocks.json'), JSON.stringify(blocksJson, null, '\t'));
 		files.push(joinPath(root, 'blocks.json'));
 	} else {
+		// MC 要求 blockstates 文件直接罗列在 blockstates/ 下（不支持子文件夹）
 		const bsFile = blockstatesFileName(trackId);
-		fs.mkdirSync(joinPath(root, 'blockstates/track_and_bogey'), { recursive: true });
-		fs.writeFileSync(joinPath(root, `blockstates/track_and_bogey/${bsFile}`), JSON.stringify(buildBlockstates(namespace, trackId, modelPath), null, '\t'));
-		files.push(joinPath(root, `blockstates/track_and_bogey/${bsFile}`));
+		fs.mkdirSync(joinPath(root, 'blockstates'), { recursive: true });
+		fs.writeFileSync(joinPath(root, `blockstates/${bsFile}`), JSON.stringify(buildBlockstates(namespace, trackId, modelPath), null, '\t'));
+		files.push(joinPath(root, `blockstates/${bsFile}`));
 	}
 
 	return { files: files.length, skipped, warnings };
@@ -983,7 +979,7 @@ export async function runTrackExport(): Promise<void> {
 					: t('ctg.export.done_model_java', [
 							options.modelPath,
 							subgroups.filter((g) => modelFileName(cleanGroupName(g.name))).length,
-							`blockstates/track_and_bogey/${blockstatesFileName(options.trackId)}`,
+							blockstatesFileName(options.trackId),
 						]),
 				t('ctg.export.done_namespace', options.namespace),
 				t('ctg.export.done_condition', modeMeta?.description ?? ''),

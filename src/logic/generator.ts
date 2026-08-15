@@ -47,7 +47,7 @@ export type TrackAxis = 'x' | 'z';
  * 计算轨道沿铺设方向的跨度。缺省长度取 16（一个完整方块），并把轨道居中于原点
  * （z 从 -length/2 到 +length/2），保证旋转后的形状也以原点为中心。
  */
-function trackSpan(cfg: TrackConfig, opts: GeneratorOptions = {}): { start: number; length: number } {
+function trackSpan(opts: GeneratorOptions = {}): { start: number; length: number } {
 	const length = opts.length ?? DEFAULT_TRACK_LENGTH;
 	return { start: -length / 2, length };
 }
@@ -78,7 +78,7 @@ function tileAlongZ(part: PartModel, start: number, length: number): CubeSpec[] 
 export function placeRails(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSpec[] {
 	const { gaugePx, heightPx, parts } = cfg;
 	const half = gaugePx / 2;
-	const { start, length } = trackSpan(cfg, opts);
+	const { start, length } = trackSpan(opts);
 	const left = bakePartAxisAligned(parts.left);
 	const right = bakePartAxisAligned(parts.right);
 	return [
@@ -113,7 +113,7 @@ export function orientTiePerpendicular(tie: PartModel): CubeSpec[] {
 export function placeTies(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSpec[] {
 	const { parts } = cfg;
 	const tieInterval = opts.tieInterval ?? DEFAULT_TIE_INTERVAL;
-	const { start, length } = trackSpan(cfg, opts);
+	const { start, length } = trackSpan(opts);
 	// 先烘焙枕木自身的轴对齐旋转，再按视觉几何判断是否需要转成跨 X（垂直钢轨）
 	const baked = bakePartAxisAligned(parts.tie);
 	const tieBase = orientTiePerpendicular(baked);
@@ -297,7 +297,7 @@ function buildPortalOverlays(cfg: TrackConfig, opts: GeneratorOptions = {}): Cub
 	const { halfW, top } = tieWrapExtent(cfg);
 	if (!(halfW > 0)) return null;
 	const m = portal.margin ?? 0.1;
-	const { start, length } = trackSpan(cfg, opts);
+	const { start, length } = trackSpan(opts);
 	const z0 = start;
 	const z1 = start + length;
 	// 覆层顶 = 枕木顶 + 余量，但不高于钢轨底面（heightPx），保证不包含钢轨

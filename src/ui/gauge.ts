@@ -10,7 +10,7 @@
 
 import type { DialogOptions } from 'blockbench-types/generated/interface/dialog';
 import { t } from '../i18n';
-import { DEFAULT_FIT, formatFit, inchToPx, mmToPx, pxToInch, pxToMM, scaleForPx } from '../logic/gauge';
+import { DEFAULT_FIT, DEFAULT_GAUGE_MM, formatFit, inchToPx, mmToPx, pxToInch, pxToMM, scaleForPx } from '../logic/gauge';
 
 /** 换算工具的当前状态 */
 interface GaugeState {
@@ -104,9 +104,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 
 /** 打开轨距换算对话框（英寸/毫米/像素/输出值联动） */
 export function runGaugeConverter(): void {
-	// 默认 Create 标称轨距 1600mm
+	// 默认 Create 标称轨距
 	const state: GaugeState = { inch: 0, mm: 0, px: 0, scale: 0 };
-	syncFromPx(state, mmToPx(1600));
+	syncFromPx(state, mmToPx(DEFAULT_GAUGE_MM));
 
 	let dialogNode: HTMLElement | null = null;
 

@@ -25,7 +25,7 @@ function importTexture(st: SourceTexture): Texture {
  * 把零件源纹理导入当前项目（按 source 去重），返回「源纹理 key → 导入的 Texture」映射。
  * 供 assembly 层把 cube 面的 texture 引用（源 key）解析为 Blockbench 的真实 Texture。
  */
-export function importSourceTextures(textures: SourceTexture[]): Map<string, Texture> {
+function importSourceTextures(textures: SourceTexture[]): Map<string, Texture> {
 	const bySource = new Map<string, Texture>();
 	const byKey = new Map<string, Texture>();
 	for (const st of textures) {

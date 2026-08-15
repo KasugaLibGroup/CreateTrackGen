@@ -1017,11 +1017,6 @@ t('textureResourceName：去扩展名、小写、清洗、去重', () => {
 	assert.strictEqual(L.textureResourceName('', used), 'texture');
 });
 
-t('modelTexturePath 拼资源路径', () => {
-	assert.strictEqual(L.modelTexturePath('kuayue', 'standard', 'rail'), 'kuayue:block/track/standard/rail');
-	assert.strictEqual(L.modelTexturePath('create', 'track', 'tie'), 'create:block/track/track/tie');
-});
-
 t('buildBlockstates：变体组合 = (none + 18 形状) × turn × waterlogged', () => {
 	const bs = L.buildBlockstates('kuayue', 'standard');
 	const keys = Object.keys(bs.variants);
@@ -1248,7 +1243,6 @@ t('buildBedrockBlocksJson：每形状一个方块（texturePath 随资源目录�
 t('textureResourcePath：纹理资源路径覆盖，缺省为 block/track/{id}', () => {
 	assert.strictEqual(L.textureResourcePath('kuayue', 'track', 'rail'), 'kuayue:block/track/track/rail');
 	assert.strictEqual(L.textureResourcePath('kuayue', 'track', 'rail', 'custom/track'), 'kuayue:custom/track/rail');
-	assert.strictEqual(L.modelTexturePath('kuayue', 'track', 'rail'), 'kuayue:block/track/track/rail', 'modelTexturePath 保持旧签名');
 });
 
 t('buildJavaModelJson：texturePathOf 逐纹理资源路径覆盖', () => {

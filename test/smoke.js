@@ -687,7 +687,7 @@ console.log('   轨距换算 → 英寸/毫米/像素联动 + 只读输出值 �
 	const ascJson = JSON.parse(ascFile.content);
 	const ascRot = ascJson.elements.find((el) => el.rotation);
 	assert(ascRot && ascRot.rotation.axis === 'x' && ascRot.rotation.angle === -45, '❌ 经典 ascending 应为单轴 X -45°');
-	const bsFile = exported.find((f) => f.path.endsWith('/blockstates/track_and_bogey/track_track.json'));
+	const bsFile = exported.find((f) => f.path.endsWith('/blockstates/track_track.json'));
 	const bsJson = JSON.parse(bsFile.content);
 	assert.strictEqual(bsJson.variants['shape=none,turn=false,waterlogged=false'].model, 'minecraft:block/air');
 	assert.strictEqual(bsJson.variants['shape=an,turn=false,waterlogged=false'].y, 180);
@@ -737,7 +737,7 @@ console.log('   轨距换算 → 英寸/毫米/像素联动 + 只读输出值 �
 	assert.strictEqual(xRef.model, 'kuayue:models/block/track/track/x_ortho.obj', '❌ OBJ 引用应指向 .obj');
 	assert.strictEqual(xRef.flip_v, true, '❌ OBJ 引用应有 flip_v: true');
 	// OBJ 模式仍写 blockstates
-	assert(exported.some((f) => f.path.endsWith('/blockstates/track_and_bogey/track_track.json')), '❌ OBJ 模式也应导出 blockstates');
+	assert(exported.some((f) => f.path.endsWith('/blockstates/track_track.json')), '❌ OBJ 模式也应导出 blockstates');
 	console.log('   导出（全部 OBJ）→ 12 个单一合并网格 .obj/.mtl + 引用 JSON + blockstates ✓');
 
 	// ── 模式 4：基岩版 ──
@@ -786,7 +786,7 @@ console.log('   轨距换算 → 英寸/毫米/像素联动 + 只读输出值 �
 	// 未自定义的纹理仍走默认资源路径 block/track/track
 	assert(exportedFiles.some((f) => f.path.includes('/textures/block/track/track/') && f.path.endsWith('.png')), '❌ 未自定义的纹理仍应写默认路径');
 	// blockstates 引用跟随模型资源路径：kuayue:custom/track/x_ortho
-	const customBs = exportedFiles.find((f) => f.path.endsWith('/blockstates/track_and_bogey/track_track.json'));
+	const customBs = exportedFiles.find((f) => f.path.endsWith('/blockstates/track_track.json'));
 	const customBsJson = JSON.parse(customBs.content);
 	assert.strictEqual(customBsJson.variants['shape=xo,turn=false,waterlogged=false'].model, 'kuayue:custom/track/x_ortho', '❌ blockstates 应引用自定义模型资源路径');
 	console.log('   导出（自定义模型/纹理资源路径）→ 模型/纹理写到对应目录，blockstates/模型引用跟随 path ✓');

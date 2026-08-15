@@ -5,7 +5,7 @@
  * 命名参考 assets/tracks/standard/：
  *  - 模型：models/block/track/{轨道id}/{形状}.json（z_ortho / x_ortho / diag / diag_2 /
  *    ascending / teleport / cross_* / tie / segment_left / segment_right）
- *  - blockstates：blockstates/track_and_bogey/{轨道id}_track.json
+ *  - blockstates：blockstates/{轨道id}_track.json（MC 要求直接罗列在 blockstates/ 下）
  *  - 纹理：textures/block/track/{轨道id}/{资源名}.png，模型内引用 {命名空间}:block/track/{id}/{资源名}
  *
  * 约定：
@@ -219,11 +219,6 @@ export function textureResourceName(name: string, used: Set<string>): string {
  */
 export function textureResourcePath(namespace: string, trackId: string, resName: string, texturePath?: string): string {
 	return `${namespace}:${texturePath ?? `block/track/${trackId}`}/${resName}`;
-}
-
-/** 模型内纹理资源路径：{命名空间}:block/track/{轨道id}/{资源名}（保持旧签名，缺省资源路径） */
-export function modelTexturePath(namespace: string, trackId: string, resName: string): string {
-	return textureResourcePath(namespace, trackId, resName);
 }
 
 /**

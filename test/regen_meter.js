@@ -14,7 +14,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const METER = path.join(__dirname, 'meter');
 const MODEL_DIR = path.join(METER, 'models/block/track/meter');
-const BS_DIR = path.join(METER, 'blockstates/track_and_bogey');
+const BS_DIR = path.join(METER, 'blockstates');
 
 function readJson(p) {
 	return JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -164,7 +164,7 @@ for (const b of baseDefs) {
 	writeShapeModel(b.id, elements, b.offset);
 }
 const bs = L.buildBlockstates('kuayue', 'meter');
-writeJson('blockstates/track_and_bogey/meter_track.json', bs);
+writeJson('blockstates/meter_track.json', bs);
 
 console.log('已生成模型：', writtenModels.sort().join(', '));
 console.log('blockstates：', Object.keys(bs.variants).length, '个变体');

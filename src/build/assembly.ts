@@ -13,7 +13,7 @@ import type { CubeSpec, MeshSpec, PartModel, ShapeSpec, TrackConfig, Vec3 } from
  * faces 透传（uv / rotation / texture），rotation 用三轴角（度）+ origin 表达。
  * textureByKey 非空时，把面的源纹理 key 解析为新工作区里导入的 Texture。
  */
-export function specToCube(spec: CubeSpec, textureByKey?: Map<string, Texture>): Cube {
+function specToCube(spec: CubeSpec, textureByKey?: Map<string, Texture>): Cube {
 	const options: any = {
 		name: spec.name,
 		from: [...spec.from],
@@ -45,7 +45,7 @@ export function specToCube(spec: CubeSpec, textureByKey?: Map<string, Texture>):
  * offset 非零时，把居中于原点的几何平移到画布对称点（Java 画布中心 (8,8)），
  * 使导出模型的对称轴正确（与导入归一化互为逆操作）。
  */
-export function appendShape(group: Group, shape: ShapeSpec, offset: Vec3 = [0, 0, 0], textureByKey?: Map<string, Texture>): Cube[] {
+function appendShape(group: Group, shape: ShapeSpec, offset: Vec3 = [0, 0, 0], textureByKey?: Map<string, Texture>): Cube[] {
 	const cubes: Cube[] = [];
 	for (const spec of shape.cubes) {
 		const s = offset[0] === 0 && offset[2] === 0 ? spec : translate([spec], offset)[0];
@@ -73,7 +73,7 @@ function translateMesh(mesh: MeshSpec, offset: Vec3): MeshSpec {
  * faces 透传（vertices / uv / rotation），面的源纹理 key 解析为新工作区里导入的 Texture。
  * 用于把输入零件的 mesh 组搬进新工作区的基础分组（tie / segment_left / segment_right）。
  */
-export function specToMesh(spec: MeshSpec, textureByKey?: Map<string, Texture>): Mesh {
+function specToMesh(spec: MeshSpec, textureByKey?: Map<string, Texture>): Mesh {
 	const faces: any = {};
 	for (const [id, f] of Object.entries(spec.faces)) {
 		if (!f) continue;

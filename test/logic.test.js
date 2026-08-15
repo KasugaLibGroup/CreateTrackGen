@@ -297,7 +297,7 @@ t('混合 cube + mesh：cubes 与 meshes 分开收集，mesh 不参与轨道形�
 	assert.strictEqual(part.meshes.length, 1);
 	const cfg = { gaugePx: 8, heightPx: 2, parts: { left: part, right: part, tie: part } };
 	const shapes = L.allShapes(cfg);
-	assert.strictEqual(shapes.length, 16, '含 mesh 时轨道形状仍照常生成（只用 cube 部分）');
+	assert.strictEqual(shapes.length, 9, '含 mesh 时轨道形状仍照常生成（只用 cube 部分）');
 });
 
 t('extractFromElements 识别 mesh 元素（hasMesh/meshes）', () => {
@@ -581,16 +581,17 @@ t('所有形状中钢轨与枕木保持垂直（钢轨旋转被烘焙，派生�
 	assert.strictEqual(ascRail.rotation[1], 0, 'ascending south 应无 Y 转向');
 });
 
-t('直轨/上升轨 2 段 2 枕木，斜轨 3 段 3 枕木', () => {
+t('直轨 2 段 2 枕木，斜轨 / 上升轨 3 段 3 枕木', () => {
 	const rail = makeRotatedRail(); // 烘焙后 8px 段
 	const cfgR = { gaugePx: 8, heightPx: 2, parts: { left: rail, right: rail, tie: makeTiePart() } };
 	// 直轨
 	const zs = L.straightZ(cfgR, { tieInterval: 8 });
 	assert.strictEqual(zs.filter((c) => c.name === 'rail').length / 2, 2, '直轨每侧应 2 段钢轨');
 	assert.strictEqual(zs.filter((c) => c.name === 'tie').length, 2, '直轨应 2 根枕木');
-	// 上升轨
+	// 上升轨：与斜轨一样 3 段 / 3 枕木（长度 24px，不再是直轨的 16px）
 	const asc = L.ascending(cfgR, 'north', { tieInterval: 8 });
-	assert.strictEqual(asc.cubes.filter((c) => c.name === 'tie').length, 2, '上升轨应 2 根枕木');
+	assert.strictEqual(asc.cubes.filter((c) => c.name === 'rail').length / 2, 3, '上升轨每侧应 3 段钢轨');
+	assert.strictEqual(asc.cubes.filter((c) => c.name === 'tie').length, 3, '上升轨应 3 根枕木');
 	// 斜轨
 	const diag = L.diagonal(cfgR, false, { tieInterval: 8 });
 	assert.strictEqual(diag.cubes.filter((c) => c.name === 'rail').length / 2, 3, '斜轨每侧应 3 段钢轨');
@@ -600,15 +601,69 @@ t('直轨/上升轨 2 段 2 枕木，斜轨 3 段 3 枕木', () => {
 	assert.strictEqual(crossD.cubes.filter((c) => c.name === 'tie').length, 6, '对角交叉应共 6 根枕木');
 });
 
-t('allShapes 生成 16 种形状，ID 与 TrackShape 对齐', () => {
+/** 计算 CubeSpec[] 应用各自旋转后的世界坐标最低 y（含整体偏移时再加 wholeY） */
+function renderedMinYOf(cubes, wholeY = 0) {
+	let minY = Infinity;
+	for (const c of cubes) {
+		const origin = c.origin ?? [0, 0, 0];
+		const rot = c.rotation ?? [0, 0, 0];
+		for (const x of [c.from[0], c.to[0]])
+			for (const y of [c.from[1], c.to[1]])
+				for (const z of [c.from[2], c.to[2]]) {
+					const rel = [x - origin[0], y - origin[1], z - origin[2]];
+					const r = L.rotateVec(rel, rot);
+					minY = Math.min(minY, r[1] + origin[1] + wholeY);
+				}
+	}
+	return minY;
+}
+
+t('ascending 整体抬升：最低点落在 xz 平面上（y≥0）', () => {
+	const cfgR = { gaugePx: 8, heightPx: 2, parts: { left: makeRotatedRail(), right: makeRotatedRail(), tie: makeTiePart() } };
+	for (const dir of ['south', 'north', 'east', 'west']) {
+		const asc = L.ascending(cfgR, dir, { tieInterval: 8 });
+		assert(renderedMinYOf(asc.cubes) >= 0, `ascending ${dir} 最低点应在 xz 平面之上（y≥0）`);
+	}
+});
+
+t('ascending 抬升在整体 Y 偏移生效之后：整体偏移为负时仍保持最低点 ≥0', () => {
+	const base = { gaugePx: 8, heightPx: 2, parts: { left: makeRotatedRail(), right: makeRotatedRail(), tie: makeTiePart() } };
+	for (const wholeY of [-3, -2, -1, 0, 2, 5]) {
+		// ascending 的抬升必须覆盖 applyWholeOffset 在形状返回后统一施加的整体偏移
+		const asc = L.ascending({ ...base, wholeModelYOffset: wholeY }, 'south', { tieInterval: 8 });
+		const applied = L.lift(asc.cubes, wholeY); // 模拟 applyWholeOffset
+		assert(renderedMinYOf(applied) >= 0, `wholeModelYOffset=${wholeY} 时最低点应 ≥0，实际 ${renderedMinYOf(applied)}`);
+	}
+});
+
+t('allShapes 只生成 9 种形状（多余形状由 blockstates 旋转表达）', () => {
 	const shapes = L.allShapes(testCfg);
 	const ids = shapes.map((s) => s.id);
-	assert.strictEqual(shapes.length, 16);
-	for (const id of ['z_ortho', 'x_ortho', 'diag', 'diag_2', 'ascending_south', 'ascending_north', 'ascending_east', 'ascending_west', 'teleport', 'teleport_x', 'cross_ortho', 'cross_diag', 'cross_d1_xo', 'cross_d1_zo', 'cross_d2_xo', 'cross_d2_zo']) {
+	assert.strictEqual(shapes.length, 9);
+	for (const id of ['x_ortho', 'diag', 'diag_2', 'ascending_south', 'teleport', 'cross_ortho', 'cross_diag', 'cross_d1_xo', 'cross_d2_xo']) {
 		assert(ids.includes(id), `缺少 ${id}`);
+	}
+	// 由 blockstates 旋转表达、不再生成：z_ortho / ascending_n/e/w / teleport_x / cross_d1_zo / cross_d2_zo
+	for (const id of ['z_ortho', 'ascending_north', 'ascending_east', 'ascending_west', 'teleport_x', 'cross_d1_zo', 'cross_d2_zo']) {
+		assert(!ids.includes(id), `不应再生成 ${id}`);
 	}
 	// 每种形状至少有 2 个 cube
 	for (const s of shapes) assert(s.cubes.length >= 2, `${s.id} 应有 >=2 个 cube`);
+});
+
+t('cross_d1_xo = 负对角 + Z 直轨，cross_d2_xo = 正对角 + Z 直轨（与参考相反命名）', () => {
+	const cfgR = { gaugePx: 8, heightPx: 2, parts: { left: makeRotatedRail(), right: makeRotatedRail(), tie: makeTiePart() } };
+	const d1 = L.allShapes(cfgR).find((s) => s.id === 'cross_d1_xo');
+	const d2 = L.allShapes(cfgR).find((s) => s.id === 'cross_d2_xo');
+	// cross_d1_xo 应含负对角（-45°Y）旋转的钢轨
+	assert(d1.cubes.some((c) => c.rotation?.[1] === -45 || c.rotation?.[1] === 315), 'cross_d1_xo 应含 -45°（负对角）');
+	// cross_d2_xo 应含正对角（+45°Y）旋转的钢轨
+	assert(d2.cubes.some((c) => c.rotation?.[1] === 45), 'cross_d2_xo 应含 +45°（正对角）');
+	// 两者都含 Z 直轨（未旋转、沿 Z 的钢轨 from/to z 跨度大）
+	for (const [name, s] of [['cross_d1_xo', d1], ['cross_d2_xo', d2]]) {
+		const straightRail = s.cubes.find((c) => !c.rotation && Math.abs(c.to[2] - c.from[2]) > Math.abs(c.to[0] - c.from[0]));
+		assert(straightRail, `${name} 应含 Z 直轨钢轨`);
+	}
 });
 
 t('diag 形状含 45°Y 旋转', () => {
@@ -652,14 +707,16 @@ t('ascending 旋转枢轴在轨道中心（xz 即 Java 方块中心 (8,8)），�
 	const rail = shape.cubes.find((c) => c.name === 'rail');
 	assert(rail, 'ascending 应含钢轨 cube');
 	assert(rail.origin, 'ascending cube 应有 origin');
-	// 中心 = straightZ 结果 z 的中心（直轨居中于原点，16px 轨 z 从 -8..8，中心 0；
-	// 输出到 Java 工作区 +8 → 方块中心 z=8）
-	const zs = L.straightZ(testCfg);
+	// ascending 缺省长度 = 3 × 枕木间距（24px，3 段钢轨 / 3 枕木）；
+	// 枢轴 z = 该直轨平铺结果 z 的中心（测试零件 16px 段平铺 24px 会越界到 32px，
+	// 中心落在越界后的视觉中心；真实 8px 段零件则精确居中于原点）
+	const zs = L.straightZ(testCfg, { tieInterval: 8, length: 3 * 8 });
 	const zsFlat = zs.flatMap((c) => [c.from[2], c.to[2]]);
 	const zCenter = (Math.min(...zsFlat) + Math.max(...zsFlat)) / 2;
 	assert.strictEqual(rail.origin[2], zCenter, `ascending 枢轴 z 应为轨道中心 ${zCenter}，实际 ${rail.origin[2]}`);
 	assert.strictEqual(rail.origin[0], 0, '枢轴 x 应为轨道横向中心（Java 空间 8）');
-	assert.strictEqual(rail.origin[1], testCfg.heightPx, '枢轴 y 应在轨道高度');
+	// 枢轴 y 在轨道高度之上（整体抬升把最低点顶到 xz 平面，origin 随 lift 一起平移）
+	assert(rail.origin[1] >= testCfg.heightPx, `枢轴 y 应不低于轨道高度，实际 ${rail.origin[1]}`);
 	assert.strictEqual(rail.rotation[0], -45);
 });
 
@@ -908,6 +965,314 @@ t('mirrorPartYz：保留纹理（textures / textureSize）供右轨复用左轨�
 	assert.strictEqual(m.cubes[0].faces.west.texture, '0', '镜像面仍引用同一张源纹理');
 	// 不污染入参
 	assert.deepStrictEqual(part.cubes[0].faces.east.uv, [0, 0, 1, 1]);
+});
+
+// ── export：Create/Kuayue 命名规范 + blockstates ──
+t('TRACK_MODEL_FILES 覆盖全部 16 形状 + 3 基础分组', () => {
+	const expected = ['z_ortho', 'x_ortho', 'diag', 'diag_2', 'ascending_south', 'ascending_north', 'ascending_east', 'ascending_west', 'teleport', 'teleport_x', 'cross_ortho', 'cross_diag', 'cross_d1_xo', 'cross_d1_zo', 'cross_d2_xo', 'cross_d2_zo', 'tie', 'segment_left', 'segment_right'];
+	for (const id of expected) assert(id in L.TRACK_MODEL_FILES, `缺少 ${id}`);
+});
+
+t('TRACK_MODEL_FILES 命名映射（ascending 只留 s 变体、teleport 只留 z、zo 类不导出）', () => {
+	assert.strictEqual(L.TRACK_MODEL_FILES.z_ortho, null, 'z_ortho 不导出（blockstate 用 x_ortho 旋转 90°）');
+	assert.strictEqual(L.TRACK_MODEL_FILES.x_ortho, 'x_ortho.json');
+	assert.strictEqual(L.TRACK_MODEL_FILES.diag, 'diag.json');
+	assert.strictEqual(L.TRACK_MODEL_FILES.diag_2, 'diag_2.json');
+	assert.strictEqual(L.TRACK_MODEL_FILES.ascending_south, 'ascending.json');
+	assert.strictEqual(L.TRACK_MODEL_FILES.ascending_north, null, 'ascending 其余方向不单独导出（blockstate 用 y 旋转）');
+	assert.strictEqual(L.TRACK_MODEL_FILES.teleport, 'teleport.json');
+	assert.strictEqual(L.TRACK_MODEL_FILES.teleport_x, null, 'teleport_x 不导出（blockstate 用 y 旋转）');
+	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d1_xo, 'cross_d1_xo.json');
+	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d1_zo, null, 'cross_d1_zo 不导出（blockstate 旋转表达）');
+	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d2_xo, 'cross_d2_xo.json');
+	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d2_zo, null, 'cross_d2_zo 不导出（blockstate 旋转表达）');
+	assert.strictEqual(L.TRACK_MODEL_FILES.tie, 'tie.json');
+	assert.strictEqual(L.TRACK_MODEL_FILES.segment_left, 'segment_left.json');
+	assert.strictEqual(L.TRACK_MODEL_FILES.segment_right, 'segment_right.json');
+});
+
+t('cleanGroupName 去掉「（…）」展示后缀', () => {
+	assert.strictEqual(L.cleanGroupName('z_ortho（Z 直轨）'), 'z_ortho');
+	assert.strictEqual(L.cleanGroupName('cross_ortho（正交交叉）'), 'cross_ortho');
+	assert.strictEqual(L.cleanGroupName('ascending_south'), 'ascending_south');
+	assert.strictEqual(L.cleanGroupName('tie'), 'tie');
+});
+
+t('modelFileName / blockstatesFileName', () => {
+	assert.strictEqual(L.modelFileName('z_ortho'), null, 'z_ortho 不单独导出');
+	assert.strictEqual(L.modelFileName('x_ortho'), 'x_ortho.json');
+	assert.strictEqual(L.modelFileName('ascending_north'), null);
+	assert.strictEqual(L.modelFileName('cross_d1_zo'), null);
+	assert.strictEqual(L.modelFileName('不存在'), null);
+	assert.strictEqual(L.blockstatesFileName('standard'), 'standard_track.json');
+	assert.strictEqual(L.blockstatesFileName('track'), 'track_track.json');
+});
+
+t('textureResourceName：去扩展名、小写、清洗、去重', () => {
+	const used = new Set();
+	assert.strictEqual(L.textureResourceName('Rail.PNG', used), 'rail');
+	assert.strictEqual(L.textureResourceName('rail.png', used), 'rail_1', '重名应追加序号');
+	assert.strictEqual(L.textureResourceName('portal track.png', used), 'portal_track');
+	assert.strictEqual(L.textureResourceName('中文名.png', used), '___');
+	assert.strictEqual(L.textureResourceName('', used), 'texture');
+});
+
+t('modelTexturePath 拼资源路径', () => {
+	assert.strictEqual(L.modelTexturePath('kuayue', 'standard', 'rail'), 'kuayue:block/track/standard/rail');
+	assert.strictEqual(L.modelTexturePath('create', 'track', 'tie'), 'create:block/track/track/tie');
+});
+
+t('buildBlockstates：变体组合 = (none + 18 形状) × turn × waterlogged', () => {
+	const bs = L.buildBlockstates('kuayue', 'standard');
+	const keys = Object.keys(bs.variants);
+	assert.strictEqual(keys.length, (1 + 18) * 2 * 2);
+	// shape=none → 空气；直轨/斜轨 → 对应模型
+	assert.strictEqual(bs.variants['shape=none,turn=false,waterlogged=false'].model, 'minecraft:block/air');
+	// zo 直轨不单独导出，用 x_ortho 旋转 90° 表达（匹配参考 blockstates）
+	assert.strictEqual(bs.variants['shape=zo,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/x_ortho');
+	assert.strictEqual(bs.variants['shape=zo,turn=false,waterlogged=false'].y, 90);
+	assert.strictEqual(bs.variants['shape=xo,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/x_ortho');
+	assert.strictEqual(bs.variants['shape=xo,turn=false,waterlogged=false'].y, undefined);
+	assert.strictEqual(bs.variants['shape=pd,turn=true,waterlogged=true'].model, 'kuayue:block/track/standard/diag');
+	// ascending / teleport 用 y 旋转表达方向（south=0 不带 y）
+	assert.strictEqual(bs.variants['shape=as,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/ascending');
+	assert.strictEqual(bs.variants['shape=as,turn=false,waterlogged=false'].y, undefined);
+	assert.strictEqual(bs.variants['shape=an,turn=false,waterlogged=false'].y, 180);
+	assert.strictEqual(bs.variants['shape=ae,turn=false,waterlogged=false'].y, 270);
+	assert.strictEqual(bs.variants['shape=aw,turn=false,waterlogged=false'].y, 90);
+	assert.strictEqual(bs.variants['shape=ts,turn=false,waterlogged=false'].y, undefined);
+	assert.strictEqual(bs.variants['shape=tw,turn=false,waterlogged=false'].y, 90);
+	// 交叉：xo / zo 方向都由 cross_d1_xo / cross_d2_xo 经 90° 旋转表达（匹配参考 blockstates）
+	assert.strictEqual(bs.variants['shape=cr_o,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_ortho');
+	assert.strictEqual(bs.variants['shape=cr_pdx,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d1_xo');
+	assert.strictEqual(bs.variants['shape=cr_pdx,turn=false,waterlogged=false'].y, 90);
+	assert.strictEqual(bs.variants['shape=cr_pdz,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d2_xo');
+	assert.strictEqual(bs.variants['shape=cr_pdz,turn=false,waterlogged=false'].y, 180);
+	assert.strictEqual(bs.variants['shape=cr_ndx,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d2_xo');
+	assert.strictEqual(bs.variants['shape=cr_ndx,turn=false,waterlogged=false'].y, 270);
+	assert.strictEqual(bs.variants['shape=cr_ndz,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d1_xo');
+	assert.strictEqual(bs.variants['shape=cr_ndz,turn=false,waterlogged=false'].y, undefined);
+	// 所有形状组合覆盖 turn/waterlogged
+	for (const turn of [false, true]) {
+		for (const wl of [false, true]) {
+			assert(bs.variants[`shape=zo,turn=${turn},waterlogged=${wl}`], `缺 shape=zo,turn=${turn},waterlogged=${wl}`);
+		}
+	}
+});
+
+// ── export：4 种导出模式 + 判定 + OBJ / Bedrock / Java 新格式 ──
+t('EXPORT_MODES 定义 4 种模式', () => {
+	assert.strictEqual(L.EXPORT_MODES.length, 4);
+	const ids = L.EXPORT_MODES.map((m) => m.id);
+	assert.deepStrictEqual(ids, ['new_java', 'classic_java', 'bedrock', 'obj']);
+	for (const m of L.EXPORT_MODES) assert(m.label && m.description, `模式 ${m.id} 应有标签与判定说明`);
+});
+
+t('groupNeedsObj：obj 模式全部回退；mesh 各模式回退', () => {
+	const meshEl = { type: 'mesh', vertices: { a: [0, 0, 0] }, faces: { f: { vertices: ['a'], textureKey: 't0' } } };
+	const cubeEl = { type: 'cube', from: [0, 0, 0], to: [4, 4, 4], faces: { up: { uv: [0, 0, 4, 4], textureKey: 't0' } } };
+	assert.strictEqual(L.groupNeedsObj([cubeEl], 'obj'), true, 'obj 模式全部回退');
+	for (const mode of ['new_java', 'classic_java', 'bedrock']) {
+		assert.strictEqual(L.groupNeedsObj([meshEl], mode), true, `${mode} 含 mesh 应回退`);
+		assert.strictEqual(L.groupNeedsObj([cubeEl], mode), false, `${mode} 纯 cube 不应回退`);
+	}
+});
+
+t('groupNeedsObj：经典 Java 多轴旋转回退，新 Java / 基岩版不回退', () => {
+	const single = { type: 'cube', from: [0, 0, 0], to: [4, 4, 4], rotation: [0, 45, 0], origin: [2, 2, 2], faces: { up: { textureKey: 't0' } } };
+	const multi = { type: 'cube', from: [0, 0, 0], to: [4, 4, 4], rotation: [-45, 90, 0], origin: [2, 2, 2], faces: { up: { textureKey: 't0' } } };
+	assert.strictEqual(L.groupNeedsObj([single], 'classic_java'), false, '经典单轴不回退');
+	assert.strictEqual(L.groupNeedsObj([multi], 'classic_java'), true, '经典多轴回退');
+	assert.strictEqual(L.groupNeedsObj([multi], 'new_java'), false, '新 Java 多轴不回退');
+	assert.strictEqual(L.groupNeedsObj([multi], 'bedrock'), false, '基岩版多轴不回退');
+});
+
+t('groupNeedsObj：基岩版多纹理回退', () => {
+	const twoTex = {
+		type: 'cube',
+		from: [0, 0, 0],
+		to: [4, 4, 4],
+		faces: { up: { textureKey: 't0' }, north: { textureKey: 't1' } },
+	};
+	assert.strictEqual(L.groupNeedsObj([twoTex], 'bedrock'), true, '基岩版多纹理回退');
+	assert.strictEqual(L.groupNeedsObj([twoTex], 'new_java'), false, 'Java 多纹理不回退');
+});
+
+t('rotationToJava：经典单轴 {angle,axis,origin}', () => {
+	assert.deepStrictEqual(L.rotationToJava([0, 45, 0], [8, 2, 8], 'classic_java'), { angle: 45, axis: 'y', origin: [8, 2, 8] });
+	assert.deepStrictEqual(L.rotationToJava([-45, 0, 0], undefined, 'classic_java'), { angle: -45, axis: 'x', origin: [0, 0, 0] });
+	assert.strictEqual(L.rotationToJava([0, 0, 0], [1, 2, 3], 'classic_java'), undefined, '无旋转不写');
+});
+
+t('rotationToJava：新格式多轴 / >45° → {x,y,z,origin}', () => {
+	assert.deepStrictEqual(L.rotationToJava([-45, 90, 0], [8, 2, 8], 'new_java'), { x: -45, y: 90, z: 0, origin: [8, 2, 8] });
+	assert.deepStrictEqual(L.rotationToJava([0, 90, 0], [8, 2, 8], 'new_java'), { x: 0, y: 90, z: 0, origin: [8, 2, 8] }, '|angle|>45 也走 {x,y,z}');
+	assert.deepStrictEqual(L.rotationToJava([0, 45, 0], [8, 2, 8], 'new_java'), { angle: 45, axis: 'y', origin: [8, 2, 8] }, '单轴 ≤45 仍用 {angle,axis}');
+});
+
+t('buildJavaModelJson：经典无 format_version，新格式有 1.21.11', () => {
+	const elements = [{ type: 'cube', from: [-2, 2, 0], to: [2, 6, 16], rotation: [0, 45, 0], origin: [8, 2, 8], faces: { up: { uv: [0, 0, 8, 8], textureKey: 't0' } } }];
+	const tex = [{ key: 't0', resName: 'rail', width: 64, height: 64 }];
+	const classic = L.buildJavaModelJson({ mode: 'classic_java', elements, textures: tex, textureSize: [64, 64], namespace: 'kuayue', trackId: 'track' });
+	assert.strictEqual(classic.format_version, undefined, '经典不应有 format_version');
+	assert.deepStrictEqual(classic.elements[0].rotation, { angle: 45, axis: 'y', origin: [8, 2, 8] });
+	assert.deepStrictEqual(classic.elements[0].faces.up.uv, [0, 0, 2, 2], 'UV 像素 → 16 单位制');
+	assert.strictEqual(classic.elements[0].faces.up.texture, '#0');
+	const fresh = L.buildJavaModelJson({ mode: 'new_java', elements: [{ ...elements[0], rotation: [-45, 90, 0] }], textures: tex, textureSize: [64, 64], namespace: 'kuayue', trackId: 'track' });
+	assert.strictEqual(fresh.format_version, '1.21.11');
+	assert.deepStrictEqual(fresh.elements[0].rotation, { x: -45, y: 90, z: 0, origin: [8, 2, 8] }, '新格式多轴 {x,y,z}');
+});
+
+t('buildObj：单一合并网格、无 o/g、顶点 px/16、vt 翻转、usemtl/mtl', () => {
+	const cube = {
+		type: 'cube',
+		name: 'rail',
+		from: [-2, 2, 0],
+		to: [2, 6, 16],
+		faces: {
+			north: { uv: [0, 0, 8, 8], textureKey: 't0' },
+			up: { uv: [0, 0, 16, 16], textureKey: 't0' },
+		},
+	};
+	const res = L.buildObj({ elements: [cube], textures: [{ key: 't0', resName: 'rail', width: 64, height: 64 }], sizeOf: { t0: [64, 64] }, namespace: 'kuayue', trackId: 'track', mtlName: 'z_ortho.mtl' });
+	const lines = res.obj.split('\n');
+	assert(lines[0] === '# Made in Blockbench' && lines[1] === 'mtllib z_ortho.mtl');
+	assert(!lines.some((l) => /^[og]\s/.test(l)), 'OBJ 不应有 o / g 分组');
+	// 顶点 px/16：corner 0 (tx,ty,tz)=(2,6,16) → v 0.125 0.375 1；corner 6 (fx,fy,fz)=(-2,2,0) → v -0.125 0.125 0
+	assert(lines.includes('v 0.125 0.375 1'), 'OBJ 顶点应为 px/16');
+	assert(lines.includes('v -0.125 0.125 0'));
+	// vt：64×64 纹理、像素 uv [0,0,8,8] → vt 0/64,1-0/64=1 … 0.125,0.875；v 翻底
+	assert(lines.includes('vt 0 1') && lines.includes('vt 0.125 0.875'));
+	// 面 / usemtl / vn
+	assert(lines.some((l) => /^f /.test(l)), 'OBJ 应有面');
+	assert(lines.some((l) => l === 'usemtl m_t0'), 'OBJ 应引用材质');
+	assert(lines.some((l) => /^vn /.test(l)), 'OBJ 应有法线');
+	// MTL
+	assert(res.mtl.includes('newmtl m_t0') && res.mtl.includes('map_Kd kuayue:block/track/track/rail'), 'MTL 应有 newmtl + map_Kd');
+	assert(/newmtl none$/.test(res.mtl.trim()), 'MTL 应以 newmtl none 结尾');
+});
+
+t('buildObj：旋转立方体烘焙为三角面（外法向）', () => {
+	const cube = {
+		type: 'cube',
+		name: 'rail',
+		from: [-2, 0, 0],
+		to: [2, 4, 16],
+		rotation: [0, 45, 0],
+		origin: [0, 0, 8],
+		faces: { up: { uv: [0, 0, 16, 16], textureKey: 't0' } },
+	};
+	const res = L.buildObj({ elements: [cube], textures: [{ key: 't0', resName: 'rail', width: 64, height: 64 }], sizeOf: { t0: [64, 64] }, namespace: 'kuayue', trackId: 'track', mtlName: 'x.mtl' });
+	// 旋转后仍有 8 个顶点 + 面
+	assert((res.obj.match(/^v /gm) || []).length === 8, '旋转立方体应有 8 个顶点');
+	assert((res.obj.match(/^f /gm) || []).length === 2, '顶面应有 2 个三角');
+	// 法线应朝 +y 附近（up 面，旋转绕 Y 不影响法线）
+	const vn = res.obj.split('\n').find((l) => /^vn /.test(l));
+	const n = vn.split(' ').slice(1).map(Number);
+	assert(Math.abs(n[1]) > 0.9 && Math.abs(n[0]) < 0.2, `up 面法线应近 +y，实际 ${vn}`);
+});
+
+t('buildObj：mesh 并入同一合并网格', () => {
+	const mesh = {
+		type: 'mesh',
+		name: 'railmesh',
+		vertices: { '0': [0, 0, 0], '1': [16, 0, 0], '2': [16, 4, 0], '3': [0, 4, 0] },
+		faces: { '0': { vertices: ['0', '1', '2', '3'], uv: { '0': [0, 0], '1': [8, 0], '2': [8, 4], '3': [0, 4] }, textureKey: 't0' } },
+	};
+	const res = L.buildObj({ elements: [mesh], textures: [{ key: 't0', resName: 'mesh', width: 16, height: 16 }], sizeOf: { t0: [16, 16] }, namespace: 'kuayue', trackId: 'track', mtlName: 'm.mtl' });
+	assert((res.obj.match(/^v /gm) || []).length === 4, 'mesh 应有 4 个顶点');
+	assert((res.obj.match(/^f /gm) || []).length === 2, '四边形 mesh 应三角化为 2 个三角');
+	assert(!/^[og]\s/m.test(res.obj), 'mesh 也不应产生 o / g 分组');
+});
+
+t('buildBedrockGeometry：bones / X 镜像 / pivot / per-face uv / up 翻转', () => {
+	const cube = {
+		type: 'cube',
+		name: 'tie',
+		from: [0, 0, 6],
+		to: [16, 2, 10],
+		faces: { up: { uv: [8, 0, 0, 1.25], rotation: 90, textureKey: 't0' }, down: { uv: [0, 0, 4, 4], textureKey: 't0' } },
+	};
+	const geo = L.buildBedrockGeometry({ identifier: 'geometry.track_tie', elements: [cube], textureSize: [64, 64] });
+	assert.strictEqual(geo.format_version, '1.21.0');
+	const g = geo['minecraft:geometry'][0];
+	assert.strictEqual(g.description.identifier, 'geometry.track_tie');
+	assert.strictEqual(g.description.texture_width, 64);
+	const bcube = g.bones[0].cubes[0];
+	// origin[0] 取反：from=[0,0,6] size=[16,2,4] → origin=[-(0+16), 0, 6]=[-16,0,6]
+	assert.deepStrictEqual(bcube.origin, [-16, 0, 6]);
+	assert.deepStrictEqual(bcube.size, [16, 2, 4]);
+	// up 面 per-face uv：uv=[u1,v1]=[8,0] → 翻转 uv+=size([8,0]+[-8,1.25]=[0,1.25])、size 取反（[-8,1.25]→[8,-1.25]）
+	assert.deepStrictEqual(bcube.uv.up.uv, [0, 1.25]);
+	assert.deepStrictEqual(bcube.uv.up.uv_size, [8, -1.25]);
+	assert.strictEqual(bcube.uv.up.uv_rotation, 90);
+	// down 面 uv=[0,0,4,4] → uv=[0,0]、size=[4,4] → 翻转 uv=[4,4]、size=[-4,-4]
+	assert.deepStrictEqual(bcube.uv.down.uv, [4, 4]);
+	assert.deepStrictEqual(bcube.uv.down.uv_size, [-4, -4]);
+});
+
+t('buildBedrockGeometry：旋转立方体带 pivot + rx/ry 取反', () => {
+	const cube = {
+		type: 'cube',
+		name: 'rail',
+		from: [-2, 0, 0],
+		to: [2, 4, 16],
+		rotation: [-45, 90, 0],
+		origin: [8, 2, 8],
+		faces: { up: { uv: [0, 0, 16, 16], textureKey: 't0' } },
+	};
+	const geo = L.buildBedrockGeometry({ identifier: 'geometry.track_diag', elements: [cube], textureSize: [64, 64] });
+	const bcube = geo['minecraft:geometry'][0].bones[0].cubes[0];
+	assert.deepStrictEqual(bcube.pivot, [-8, 2, 8], 'pivot X 取反');
+	assert.deepStrictEqual(bcube.rotation, [45, -90, 0], 'rx/ry 取反、rz 保留');
+});
+
+t('buildObjReferenceJson：forge:obj 引用 + flip_v + model 路径', () => {
+	const ref = L.buildObjReferenceJson({ namespace: 'kuayue', trackId: 'track', shape: 'z_ortho', textures: [{ key: 't0', resName: 'rail', width: 64, height: 64 }] });
+	assert.strictEqual(ref.loader, 'forge:obj');
+	assert.strictEqual(ref.flip_v, true);
+	assert.strictEqual(ref.model, 'kuayue:models/block/track/track/z_ortho.obj');
+	assert.strictEqual(ref.textures['0'], 'kuayue:block/track/track/rail');
+	assert.strictEqual(ref.textures.particle, 'kuayue:block/track/track/rail');
+});
+
+t('buildBedrockBlocksJson：每形状一个方块（texturePath 随资源目录）', () => {
+	const blocks = L.buildBedrockBlocksJson({ namespace: 'kuayue', trackId: 'track', shapes: [{ id: 'tie', texturePath: 'blocks/track/tie' }, { id: 'segment_left', texturePath: 'custom/rail' }] });
+	assert.strictEqual(blocks.format_version, '1.21.0');
+	assert(blocks.blocks['kuayue:track_tie'], '应定义 kuayue:track_tie');
+	assert.strictEqual(blocks.blocks['kuayue:track_tie'].geometry, 'geometry.track_tie');
+	assert.strictEqual(blocks.blocks['kuayue:track_tie'].textures, 'blocks/track/tie');
+	assert.strictEqual(blocks.blocks['kuayue:track_segment_left'].textures, 'custom/rail', 'textures 应随自定义资源目录');
+});
+
+t('textureResourcePath：纹理资源路径覆盖，缺省为 block/track/{id}', () => {
+	assert.strictEqual(L.textureResourcePath('kuayue', 'track', 'rail'), 'kuayue:block/track/track/rail');
+	assert.strictEqual(L.textureResourcePath('kuayue', 'track', 'rail', 'custom/track'), 'kuayue:custom/track/rail');
+	assert.strictEqual(L.modelTexturePath('kuayue', 'track', 'rail'), 'kuayue:block/track/track/rail', 'modelTexturePath 保持旧签名');
+});
+
+t('buildJavaModelJson：texturePathOf 逐纹理资源路径覆盖', () => {
+	const elements = [{ type: 'cube', from: [-2, 2, 0], to: [2, 6, 16], faces: { up: { uv: [0, 0, 8, 8], textureKey: 't0' }, north: { uv: [0, 0, 8, 8], textureKey: 't1' } } }];
+	const tex = [
+		{ key: 't0', resName: 'rail', width: 64, height: 64 },
+		{ key: 't1', resName: 'tie', width: 64, height: 64 },
+	];
+	const json = L.buildJavaModelJson({ mode: 'classic_java', elements, textures: tex, textureSize: [64, 64], namespace: 'kuayue', trackId: 'track', texturePathOf: { t0: 'custom/rail', t1: 'block/track/track' } });
+	const refs = Object.values(json.textures).filter((v) => typeof v === 'string');
+	assert(refs.includes('kuayue:custom/rail/rail'), `自定义纹理路径应生效，实际 ${refs.join(', ')}`);
+	assert(refs.includes('kuayue:block/track/track/tie'), '其余纹理保持默认资源路径');
+});
+
+t('buildBlockstates：自定义模型资源路径时引用跟随', () => {
+	const bs = L.buildBlockstates('kuayue', 'track', 'custom/track');
+	assert.strictEqual(bs.variants['shape=xo,turn=false,waterlogged=false'].model, 'kuayue:custom/track/x_ortho');
+	// 缺省模型资源路径保持 block/track/{id}
+	assert.strictEqual(L.buildBlockstates('kuayue', 'track').variants['shape=xo,turn=false,waterlogged=false'].model, 'kuayue:block/track/track/x_ortho');
+});
+
+t('buildObjReferenceJson：自定义模型资源路径时 .obj 引用跟随', () => {
+	const ref = L.buildObjReferenceJson({ namespace: 'kuayue', trackId: 'track', shape: 'x_ortho', textures: [], modelPath: 'custom/track' });
+	assert.strictEqual(ref.model, 'kuayue:models/custom/track/x_ortho.obj');
 });
 
 console.log(`\n✅ logic.test.js 全部通过（${passed} 项）`);

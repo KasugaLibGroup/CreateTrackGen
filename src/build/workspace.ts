@@ -8,6 +8,7 @@
  */
 
 import type { SourceTexture } from '../logic/types';
+import { t } from '../i18n';
 
 /** 从 data URL 导入一张纹理到当前项目 */
 function importTexture(st: SourceTexture): Texture {
@@ -53,7 +54,7 @@ export function createTrackWorkspace(
 	textures: SourceTexture[]
 ): Map<string, Texture> {
 	if (!newProject(format)) {
-		throw new Error('无法创建新的工作区（模型格式无效）');
+		throw new Error(t('ctg.workspace.create_fail'));
 	}
 	Project.name = name;
 	Project.texture_width = textureSize[0];

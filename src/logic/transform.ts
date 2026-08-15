@@ -94,7 +94,7 @@ function rotZ(v: Vec3, deg: number): Vec3 {
 }
 
 /** 按 [rx, ry, rz] 依次绕 X→Y→Z 旋转向量（Minecraft 的 Cube.rotation 顺序） */
-function rotateVec(v: Vec3, rot: Vec3): Vec3 {
+export function rotateVec(v: Vec3, rot: Vec3): Vec3 {
 	return rotZ(rotY(rotX(v, rot[0]), rot[1]), rot[2]);
 }
 

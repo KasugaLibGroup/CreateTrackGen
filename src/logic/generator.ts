@@ -12,8 +12,14 @@
  */
 
 import { computeBBox } from './parts';
-import { bakePartAxisAligned, bakeRotateY90, cloneCubes, lift, rotateX, rotateY, translate } from './transform';
+import { bakePartAxisAligned, bakeRotateY90, cloneCubes, lift, rotateVec, rotateX, rotateY, translate } from './transform';
+import { t } from '../i18n';
 import type { CubeFaceDirection, CubeSpec, FaceSpec, PartModel, ShapeSpec, TrackConfig, Vec3 } from './types';
+
+/** 形状展示名：id + 本地化括号后缀（cleanGroupName 会去掉后缀取回 id） */
+function shapeDisplay(id: string, descKey: string, vars?: string | number): string {
+	return `${id}${t(descKey, vars)}`;
+}
 
 /** 生成配置：轨道长度与枕木间距 */
 export interface GeneratorOptions {
@@ -131,6 +137,27 @@ export function centerOf(cubes: CubeSpec[]): Vec3 {
 }
 
 /**
+ * 计算 CubeSpec[] 渲染（应用各自 rotation 后）的最低 y 坐标。
+ * computeBBox 只读 from/to，忽略 rotation；带旋转的 cube（如 ascending 的 -45°X）
+ * 的实际最低点需要把 8 个角点经 origin + R·(局部−origin) 换算到世界坐标。
+ */
+function renderedMinY(cubes: CubeSpec[]): number {
+	let minY = Infinity;
+	for (const c of cubes) {
+		const origin = c.origin ?? ([0, 0, 0] as Vec3);
+		const rot = c.rotation ?? ([0, 0, 0] as Vec3);
+		for (const x of [c.from[0], c.to[0]])
+			for (const y of [c.from[1], c.to[1]])
+				for (const z of [c.from[2], c.to[2]]) {
+					const rel: Vec3 = [x - origin[0], y - origin[1], z - origin[2]];
+					const r = rotateVec(rel, rot);
+					minY = Math.min(minY, r[1] + origin[1]);
+				}
+	}
+	return minY;
+}
+
+/**
  * 直轨（沿 Z）：左右钢轨 + 枕木。
  */
 export function straightZ(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSpec[] {
@@ -150,7 +177,7 @@ export function straight(cfg: TrackConfig, axis: TrackAxis = 'z', opts: Generato
 	const cubes = axis === 'z' ? straightZ(cfg, opts) : straightX(cfg, opts);
 	return {
 		id: axis === 'z' ? 'z_ortho' : 'x_ortho',
-		name: axis === 'z' ? 'z_ortho（Z 直轨）' : 'x_ortho（X 直轨）',
+		name: axis === 'z' ? shapeDisplay('z_ortho', 'ctg.shape.desc.z_ortho') : shapeDisplay('x_ortho', 'ctg.shape.desc.x_ortho'),
 		cubes,
 	};
 }
@@ -167,7 +194,7 @@ export function diagonal(cfg: TrackConfig, mirror: boolean, opts: GeneratorOptio
 	const rotated = rotateY(zs, angle, centerOf(zs));
 	return {
 		id: mirror ? 'diag_2' : 'diag',
-		name: mirror ? 'diag_2（负 45° 斜轨）' : 'diag（正 45° 斜轨）',
+		name: mirror ? shapeDisplay('diag_2', 'ctg.shape.desc.diag_2') : shapeDisplay('diag', 'ctg.shape.desc.diag'),
 		cubes: rotated,
 	};
 }
@@ -183,13 +210,24 @@ export function diagonal(cfg: TrackConfig, mirror: boolean, opts: GeneratorOptio
  * 「先沿铺设方向倾斜，再整体转向」。
  * 枢轴取轨道 z 方向的中心（Java 画布 xz (8,8)），而非前缘 (8,0)：这样上升轨的
  * 旋转轴落在方块中心，与 Create/Kuayue 的 ascending_template 约定一致。
+ *
+ * 上升轨与斜轨一样覆盖更长的铺设距离：长度 = 3 × 枕木间距（默认 24px，3 段钢轨
+ * / 3 根枕木），而非直轨的 16px（2 段 / 2 根）。
+ *
+ * 绕中心 -45° 倾斜后，轨道下端会沉入 xz 平面以下（下方枕木最低点 y<0）。
+ * 用户可定义两个 y 方向偏移：heightPx（钢轨高度，straightZ 内已施加）与
+ * wholeModelYOffset（整体 Y 偏移，allShapes 的 applyWholeOffset 在形状返回后统一施加）。
+ * 这里抬升到「整体 Y 偏移生效之后」最低点恰好落在 xz 平面上（y≥0）：
+ *  - 整体偏移 ≥0：抬到 0，随后整体再上升 wholeY（与其他形状一致）；
+ *  - 整体偏移 <0：多抬 -wholeY，把整体下沉的 ascending 顶回平面。
+ * lift 同时平移 from/to 与 origin，渲染几何整体均匀上移，倾斜形状保持不变。
  */
 export function ascending(
 	cfg: TrackConfig,
 	dir: 'south' | 'north' | 'east' | 'west',
 	opts: GeneratorOptions = {}
 ): ShapeSpec {
-	const zs = straightZ(cfg, opts);
+	const zs = straightZ(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
 	const bbox = computeBBox(zs);
 	// 枢轴取轨道 xz 中心（Java 模式下即方块中心 (8,8)），Y 在轨道高度处
 	const pivot: Vec3 = [
@@ -199,10 +237,18 @@ export function ascending(
 	];
 	const yaw: Record<string, number> = { south: 0, north: 180, east: 270, west: 90 };
 	const tilted = rotateY(rotateX(zs, -45, pivot), yaw[dir], pivot);
+	const wholeY = cfg.wholeModelYOffset ?? 0;
+	let cubes = tilted;
+	// 抬升量覆盖整体 Y 偏移：整体偏移为负时多抬，保证「整体偏移生效后」最低点 ≥ 0
+	const need = -(renderedMinY(cubes) + Math.min(0, wholeY));
+	if (need > 0) cubes = lift(cubes, need);
+	// 兜底：浮点误差下最终最低点（含整体偏移）仍 <0 再补抬升
+	const finalMin = renderedMinY(cubes) + wholeY;
+	if (finalMin < 0) cubes = lift(cubes, -finalMin);
 	return {
 		id: `ascending_${dir}`,
-		name: `ascending_${dir}（上升 ${dir}）`,
-		cubes: tilted,
+		name: `ascending_${dir}${t('ctg.shape.desc.ascending', t('ctg.dir.' + dir))}`,
+		cubes,
 	};
 }
 
@@ -305,7 +351,7 @@ export function teleport(cfg: TrackConfig, axis: TrackAxis = 'z', opts: Generato
 	const cubes = axis === 'x' ? rotateY(all, 90, centerOf(all)) : all;
 	return {
 		id: axis === 'x' ? 'teleport_x' : 'teleport',
-		name: axis === 'x' ? 'teleport_x（X 传送门轨道）' : 'teleport（Z 传送门轨道）',
+		name: axis === 'x' ? shapeDisplay('teleport_x', 'ctg.shape.desc.teleport_x') : shapeDisplay('teleport', 'ctg.shape.desc.teleport'),
 		cubes,
 	};
 }
@@ -314,12 +360,17 @@ export function teleport(cfg: TrackConfig, axis: TrackAxis = 'z', opts: Generato
  * 十字交叉轨道。kind 对应 TrackShape：
  *  - ortho：Z 直轨 + X 直轨
  *  - diag：正斜轨 + 负斜轨
- *  - pd_xo：正斜轨 + X 直轨  /  pd_zo：正斜轨 + Z 直轨
- *  - nd_xo：负斜轨 + X 直轨  /  nd_zo：负斜轨 + Z 直轨
+ *  - pd_zo：正斜轨 + Z 直轨  /  nd_zo：负斜轨 + Z 直轨
+ *
+ * 交叉模型只生成 xo 名字的两个文件（cross_d1_xo / cross_d2_xo），但几何都是
+ * 「斜轨 + Z 直轨」：blockstates 里 xo / zo 方向都由它们经 90° 旋转表达（参考
+ * Kuayue meter / guard 的 blockstates）。命名与 Create 相反：
+ *   cross_d1_xo = 负对角 + Z 直轨，cross_d2_xo = 正对角 + Z 直轨
+ * （Create/Kuayue 参考模型里 cross_d1 是负对角、cross_d2 是正对角）。
  */
 export function cross(
 	cfg: TrackConfig,
-	kind: 'ortho' | 'diag' | 'pd_xo' | 'pd_zo' | 'nd_xo' | 'nd_zo',
+	kind: 'ortho' | 'diag' | 'pd_zo' | 'nd_zo',
 	opts: GeneratorOptions = {}
 ): ShapeSpec {
 	let cubes: CubeSpec[] = [];
@@ -335,14 +386,8 @@ export function cross(
 			cubes = [...pos, ...neg];
 			break;
 		}
-		case 'pd_xo':
-			cubes = [...diagonal(cfg, false, opts).cubes, ...straightX(cfg, opts)];
-			break;
 		case 'pd_zo':
 			cubes = [...diagonal(cfg, false, opts).cubes, ...straightZ(cfg, opts)];
-			break;
-		case 'nd_xo':
-			cubes = [...diagonal(cfg, true, opts).cubes, ...straightX(cfg, opts)];
 			break;
 		case 'nd_zo':
 			cubes = [...diagonal(cfg, true, opts).cubes, ...straightZ(cfg, opts)];
@@ -351,18 +396,14 @@ export function cross(
 	const idMap: Record<string, string> = {
 		ortho: 'cross_ortho',
 		diag: 'cross_diag',
-		pd_xo: 'cross_d1_xo',
-		pd_zo: 'cross_d1_zo',
-		nd_xo: 'cross_d2_xo',
-		nd_zo: 'cross_d2_zo',
+		pd_zo: 'cross_d2_xo',
+		nd_zo: 'cross_d1_xo',
 	};
 	const nameMap: Record<string, string> = {
-		ortho: 'cross_ortho（正交交叉）',
-		diag: 'cross_diag（对角交叉）',
-		pd_xo: 'cross_d1_xo（正对角 + X 直轨）',
-		pd_zo: 'cross_d1_zo（正对角 + Z 直轨）',
-		nd_xo: 'cross_d2_xo（负对角 + X 直轨）',
-		nd_zo: 'cross_d2_zo（负对角 + Z 直轨）',
+		ortho: shapeDisplay('cross_ortho', 'ctg.shape.desc.cross_ortho'),
+		diag: shapeDisplay('cross_diag', 'ctg.shape.desc.cross_diag'),
+		pd_zo: shapeDisplay('cross_d2_xo', 'ctg.shape.desc.cross_pd_zo'),
+		nd_zo: shapeDisplay('cross_d1_xo', 'ctg.shape.desc.cross_nd_zo'),
 	};
 	return { id: idMap[kind], name: nameMap[kind], cubes };
 }
@@ -385,25 +426,26 @@ function applyWholeOffset(cfg: TrackConfig, shape: ShapeSpec): ShapeSpec {
 	return { ...shape, cubes: lift(shape.cubes, dy) };
 }
 
-/** 生成全部 15 种轨道形状 */
+/**
+ * 生成全部 9 种轨道形状 —— 只生成 blockstates 需要引用的模型，多余的由旋转表达：
+ *  - 不生成 z_ortho：shape=zo 由 x_ortho 旋转 90° 表达
+ *  - 不生成 ascending_north/east/west：方向由 ascending_south 经 blockstates 的 y 旋转表达
+ *  - 不生成 teleport_x：传送门 4 方向都由 teleport（Z 向）经 y 旋转表达
+ *  - 不生成 cross_d1_zo / cross_d2_zo：cross 的 xo/zo 方向都由 cross_d1_xo / cross_d2_xo
+ *    （都是「斜轨 + Z 直轨」）经 90° 旋转表达（见 src/logic/export.ts 的 BLOCKSTATE_SHAPES）
+ * 弯道渲染基础分组 tie / segment_left / segment_right 由 buildBaseParts 单独创建。
+ */
 export function allShapes(cfg: TrackConfig, opts: GeneratorOptions = {}): ShapeSpec[] {
 	const defs: ShapeDef[] = [
-		{ id: 'z_ortho', name: 'z_ortho（Z 直轨）', build: (c) => straight(c, 'z', opts) },
-		{ id: 'x_ortho', name: 'x_ortho（X 直轨）', build: (c) => straight(c, 'x', opts) },
-		{ id: 'diag', name: 'diag（正 45° 斜轨）', build: (c) => diagonal(c, false, opts) },
-		{ id: 'diag_2', name: 'diag_2（负 45° 斜轨）', build: (c) => diagonal(c, true, opts) },
-		{ id: 'ascending_south', name: 'ascending_south', build: (c) => ascending(c, 'south', opts) },
-		{ id: 'ascending_north', name: 'ascending_north', build: (c) => ascending(c, 'north', opts) },
-		{ id: 'ascending_east', name: 'ascending_east', build: (c) => ascending(c, 'east', opts) },
-		{ id: 'ascending_west', name: 'ascending_west', build: (c) => ascending(c, 'west', opts) },
-		{ id: 'teleport', name: 'teleport（Z 传送门）', build: (c) => teleport(c, 'z', opts) },
-		{ id: 'teleport_x', name: 'teleport_x（X 传送门）', build: (c) => teleport(c, 'x', opts) },
-		{ id: 'cross_ortho', name: 'cross_ortho（正交交叉）', build: (c) => cross(c, 'ortho', opts) },
-		{ id: 'cross_diag', name: 'cross_diag（对角交叉）', build: (c) => cross(c, 'diag', opts) },
-		{ id: 'cross_d1_xo', name: 'cross_d1_xo', build: (c) => cross(c, 'pd_xo', opts) },
-		{ id: 'cross_d1_zo', name: 'cross_d1_zo', build: (c) => cross(c, 'pd_zo', opts) },
-		{ id: 'cross_d2_xo', name: 'cross_d2_xo', build: (c) => cross(c, 'nd_xo', opts) },
-		{ id: 'cross_d2_zo', name: 'cross_d2_zo', build: (c) => cross(c, 'nd_zo', opts) },
+		{ id: 'x_ortho', name: shapeDisplay('x_ortho', 'ctg.shape.desc.x_ortho'), build: (c) => straight(c, 'x', opts) },
+		{ id: 'diag', name: shapeDisplay('diag', 'ctg.shape.desc.diag'), build: (c) => diagonal(c, false, opts) },
+		{ id: 'diag_2', name: shapeDisplay('diag_2', 'ctg.shape.desc.diag_2'), build: (c) => diagonal(c, true, opts) },
+		{ id: 'ascending_south', name: shapeDisplay('ascending_south', 'ctg.shape.desc.ascending', t('ctg.dir.south')), build: (c) => ascending(c, 'south', opts) },
+		{ id: 'teleport', name: shapeDisplay('teleport', 'ctg.shape.desc.teleport'), build: (c) => teleport(c, 'z', opts) },
+		{ id: 'cross_ortho', name: shapeDisplay('cross_ortho', 'ctg.shape.desc.cross_ortho'), build: (c) => cross(c, 'ortho', opts) },
+		{ id: 'cross_diag', name: shapeDisplay('cross_diag', 'ctg.shape.desc.cross_diag'), build: (c) => cross(c, 'diag', opts) },
+		{ id: 'cross_d1_xo', name: 'cross_d1_xo', build: (c) => cross(c, 'nd_zo', opts) },
+		{ id: 'cross_d2_xo', name: 'cross_d2_xo', build: (c) => cross(c, 'pd_zo', opts) },
 	];
 	return defs.map((d) => applyWholeOffset(cfg, d.build(cfg)));
 }

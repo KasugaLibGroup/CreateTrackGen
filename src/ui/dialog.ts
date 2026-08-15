@@ -22,6 +22,7 @@ import { allShapes } from '../logic/generator';
 import { DEFAULT_GAUGE_PX, inchToPx, mmToPx, pxToInch, pxToMM } from '../logic/gauge';
 import { consistentTextureSize, scopeTextureKeys, targetFormatForParts } from '../logic/parts';
 import { mirrorPartYz } from '../logic/transform';
+import { t } from '../i18n';
 import type { PartModel, PortalConfig, ShapeSpec, SourceTexture, TrackConfig } from '../logic/types';
 import { pickBbModels, parseImportedBbModel, extractSelectedPart, pickTabProject, pickPortalTrackTexture, pickPortalMipTexture } from './import';
 import { createTrackWorkspace } from '../build/workspace';
@@ -49,7 +50,10 @@ interface PartState {
 	portalMip: SourceTexture | null;
 }
 
-const PART_LABEL: Record<PartName, string> = { left: '左轨', right: '右轨', tie: '枕木' };
+/** 零件展示名（i18n） */
+function partLabel(which: PartName): string {
+	return t('ctg.dialog.part.' + which);
+}
 
 /** 零件来源动作 —— 供按钮点击与测试驱动（见 config._driver） */
 interface PartActions {
@@ -157,24 +161,22 @@ function partRowEl(which: PartName): HTMLElement {
 	const row = el('div', 'ctg-part-row');
 	row.dataset.part = which;
 	const head = el('div', 'ctg-part-head');
-	head.append(el('span', 'ctg-part-title', PART_LABEL[which]));
+	head.append(el('span', 'ctg-part-title', partLabel(which)));
 	head.append(
 		el(
 			'span',
 			'ctg-part-desc',
-			isRight
-				? '可直接导入 / 从标签页提取，或从「左轨」沿其中心 YZ 平面镜像生成'
-				: '从磁盘导入 .bbmodel，或从某个标签页中选中元素提取'
+			isRight ? t('ctg.dialog.part.desc.right') : t('ctg.dialog.part.desc.left')
 		)
 	);
 	row.append(head);
-	const status = el('div', 'ctg-part-status', '未选择');
+	const status = el('div', 'ctg-part-status', t('ctg.dialog.not_selected'));
 	status.dataset.status = which;
 	row.append(status);
 	const actions = el('div', 'ctg-part-actions');
-	actions.append(partButton('file', which, '导入文件…'));
-	actions.append(partButton('tab', which, '选择一个标签页…'));
-	if (isRight) actions.append(partButton('mirror', which, '从第一个模型对称'));
+	actions.append(partButton('file', which, t('ctg.dialog.import_btn')));
+	actions.append(partButton('tab', which, t('ctg.dialog.pick_tab_btn')));
+	if (isRight) actions.append(partButton('mirror', which, t('ctg.dialog.mirror_btn')));
 	row.append(actions);
 	return row;
 }
@@ -188,7 +190,7 @@ function partRowEl(which: PartName): HTMLElement {
 function buildLeftColumn(): HTMLElement | '' {
 	if (typeof document === 'undefined') return '';
 	const col = el('div', 'ctg-col');
-	col.append(el('div', 'ctg-col-title', '轨道零件'));
+	col.append(el('div', 'ctg-col-title', t('ctg.dialog.col_parts')));
 	col.append(partRowEl('left'));
 	col.append(partRowEl('right'));
 	col.append(partRowEl('tie'));
@@ -196,59 +198,48 @@ function buildLeftColumn(): HTMLElement | '' {
 	const portalRow = el('div', 'ctg-part-row');
 	portalRow.dataset.part = 'portal';
 	const portalHead = el('div', 'ctg-part-head');
-	portalHead.append(el('span', 'ctg-part-title', '传送门纹理'));
-	portalHead.append(
-		el(
-			'span',
-			'ctg-part-desc',
-			'两张分别可选：portal_track 铺整个模型（缺省用零件默认纹理）；portal_track_mip 生成左右覆层块（缺省不生成）'
-		)
-	);
+	portalHead.append(el('span', 'ctg-part-title', t('ctg.dialog.portal.title')));
+	portalHead.append(el('span', 'ctg-part-desc', t('ctg.dialog.portal.desc')));
 	portalRow.append(portalHead);
-	const statusTrack = el('div', 'ctg-part-status', 'portal_track：未导入（轨道/枕木用默认纹理）');
+	const statusTrack = el('div', 'ctg-part-status', t('ctg.dialog.portal.track_default'));
 	statusTrack.dataset.status = 'portal_track';
 	portalRow.append(statusTrack);
-	const statusMip = el('div', 'ctg-part-status', 'portal_track_mip：未导入（不生成覆层块）');
+	const statusMip = el('div', 'ctg-part-status', t('ctg.dialog.portal.mip_default'));
 	statusMip.dataset.status = 'portal_mip';
 	portalRow.append(statusMip);
 	const portalActions = el('div', 'ctg-part-actions');
-	portalActions.append(partButton('portal_track', 'portal', '导入 portal_track…'));
-	portalActions.append(partButton('portal_mip', 'portal', '导入 portal_track_mip…'));
+	portalActions.append(partButton('portal_track', 'portal', t('ctg.dialog.portal.import_track')));
+	portalActions.append(partButton('portal_mip', 'portal', t('ctg.dialog.portal.import_mip')));
 	portalRow.append(portalActions);
 	col.append(portalRow);
 
-	col.append(
-		el(
-			'div',
-			'ctg-hint',
-			'三个零件的纹理分辨率必须一致才能生成。右轨若选择「从第一个模型对称」，将与左轨共用同一张纹理。' +
-				' 任一零件含 mesh 组时，新工作区为自由模型（否则为 Java 方块/物品模型）。'
-		)
-	);
+	col.append(el('div', 'ctg-hint', t('ctg.dialog.hint')));
 	return col;
 }
 
-/** 某个零件 / 传送门纹理的状态文本 */
-function statusText(state: PartState, which: PartName | 'portal_track' | 'portal_mip'): string {
+/** 某个零件 / 传送门纹理的状态文本与是否"已就绪"（OK 样式） */
+function statusInfo(state: PartState, which: PartName | 'portal_track' | 'portal_mip'): { text: string; ok: boolean } {
 	if (which === 'portal_track') {
 		return state.portalTrack
-			? `✓ portal_track：${state.portalTrack.name}`
-			: 'portal_track：未导入（轨道/枕木用默认纹理）';
+			? { text: t('ctg.dialog.portal.track_ok', state.portalTrack.name), ok: true }
+			: { text: t('ctg.dialog.portal.track_default'), ok: false };
 	}
 	if (which === 'portal_mip') {
-		return state.portalMip ? `✓ portal_track_mip：${state.portalMip.name}` : 'portal_track_mip：未导入（不生成覆层块）';
+		return state.portalMip
+			? { text: t('ctg.dialog.portal.mip_ok', state.portalMip.name), ok: true }
+			: { text: t('ctg.dialog.portal.mip_default'), ok: false };
 	}
 	if (which === 'right' && state.rightMode === 'mirror') {
 		return state.left
-			? '✓ 从「左轨」沿其中心 YZ 平面镜像生成（生成时派生）'
-			: '请先选择「左轨」零件';
+			? { text: t('ctg.dialog.mirror_status'), ok: true }
+			: { text: t('ctg.dialog.need_left_short'), ok: false };
 	}
 	const part = which === 'left' ? state.left : which === 'tie' ? state.tie : state.right;
-	if (!part) return '未选择';
-	const tex = part.textureSize ? ` · 纹理 ${part.textureSize[0]}×${part.textureSize[1]}px` : '';
+	if (!part) return { text: t('ctg.dialog.not_selected'), ok: false };
+	const tex = part.textureSize ? t('ctg.dialog.tex_size', [part.textureSize[0], part.textureSize[1]]) : '';
 	const count = part.cubes.length + (part.meshes?.length ?? 0);
-	const meshNote = part.hasMesh ? ' · 含 mesh 组' : '';
-	return `✓ 已选择：${count} 个元素${meshNote}${tex}`;
+	const meshNote = part.hasMesh ? t('ctg.dialog.mesh_note') : '';
+	return { text: t('ctg.dialog.selected', [count, meshNote, tex]), ok: true };
 }
 
 /** 刷新零件状态行 */
@@ -257,12 +248,9 @@ function renderStatus(state: PartState, root: HTMLElement | null): void {
 	for (const which of ['left', 'right', 'tie', 'portal_track', 'portal_mip'] as (PartName | 'portal_track' | 'portal_mip')[]) {
 		const el = root.querySelector(`[data-status="${which}"]`);
 		if (!el) continue;
-		const text = statusText(state, which);
-		el.textContent = text;
-		el.classList.toggle(
-			'ctg-status-ok',
-			!text.includes('未选择') && !text.includes('请先') && !text.includes('未导入')
-		);
+		const info = statusInfo(state, which);
+		el.textContent = info.text;
+		el.classList.toggle('ctg-status-ok', info.ok);
 	}
 }
 
@@ -286,12 +274,12 @@ function createPartActions(state: PartState, onChange: () => void): PartActions 
 			try {
 				const part = parseImportedBbModel(file);
 				setPart(which, part);
-				Blockbench.showQuickMessage(`「${PART_LABEL[which]}」已选择：${file.name}`);
+				Blockbench.showQuickMessage(t('ctg.dialog.part_imported', [partLabel(which), file.name]));
 			} catch (e: any) {
 				Blockbench.showMessageBox({
-					title: '导入失败',
-					message: `无法解析「${file.name}」：${e?.message ?? e}`,
-					buttons: ['确定'],
+					title: t('ctg.dialog.import_failed'),
+					message: t('ctg.dialog.import_failed_msg', [file.name, e?.message ?? String(e)]),
+					buttons: [t('ctg.ok')],
 					confirm: 0,
 				});
 			}
@@ -304,13 +292,13 @@ function createPartActions(state: PartState, onChange: () => void): PartActions 
 				setPart(which, part);
 				const count = part.cubes.length + (part.meshes?.length ?? 0);
 				Blockbench.showQuickMessage(
-					`「${PART_LABEL[which]}」已从标签页「${(proj as any).name || '未命名'}」提取 ${count} 个元素`
+					t('ctg.dialog.part_extracted', [partLabel(which), (proj as any).name || t('ctg.dialog.unnamed'), count])
 				);
 			} catch (e: any) {
 				Blockbench.showMessageBox({
-					title: '提取失败',
+					title: t('ctg.dialog.extract_failed'),
 					message: e?.message ?? String(e),
-					buttons: ['确定'],
+					buttons: [t('ctg.ok')],
 					confirm: 0,
 				});
 			}
@@ -318,9 +306,9 @@ function createPartActions(state: PartState, onChange: () => void): PartActions 
 		async mirrorRight() {
 			if (!state.left) {
 				Blockbench.showMessageBox({
-					title: '需要左轨',
-					message: '请先为「左轨」选择一个零件，再使用「从第一个模型对称」。',
-					buttons: ['确定'],
+					title: t('ctg.dialog.need_left'),
+					message: t('ctg.dialog.need_left_msg'),
+					buttons: [t('ctg.ok')],
 					confirm: 0,
 				});
 				return;
@@ -332,22 +320,22 @@ function createPartActions(state: PartState, onChange: () => void): PartActions 
 		async importPortalTrack() {
 			const tex = await pickPortalTrackTexture();
 			if (!tex) {
-				Blockbench.showQuickMessage('未导入 portal_track 纹理');
+				Blockbench.showQuickMessage(t('ctg.dialog.portal.track_not_imported'));
 				return;
 			}
 			state.portalTrack = tex;
 			onChange();
-			Blockbench.showQuickMessage(`已导入 portal_track：${tex.name}`);
+			Blockbench.showQuickMessage(t('ctg.dialog.portal.track_imported', tex.name));
 		},
 		async importPortalMip() {
 			const tex = await pickPortalMipTexture();
 			if (!tex) {
-				Blockbench.showQuickMessage('未导入 portal_track_mip 纹理');
+				Blockbench.showQuickMessage(t('ctg.dialog.portal.mip_not_imported'));
 				return;
 			}
 			state.portalMip = tex;
 			onChange();
-			Blockbench.showQuickMessage(`已导入 portal_track_mip：${tex.name}`);
+			Blockbench.showQuickMessage(t('ctg.dialog.portal.mip_imported', tex.name));
 		},
 	};
 }
@@ -410,7 +398,7 @@ function wireGaugeConversion(root: HTMLElement): void {
 
 /** 零件纹理分辨率的展示文本 */
 function textureLabel(part: PartModel): string {
-	if (!part.textureSize) return '（无纹理）';
+	if (!part.textureSize) return t('ctg.dialog.no_texture');
 	return `${part.textureSize[0]} × ${part.textureSize[1]} px`;
 }
 
@@ -424,15 +412,15 @@ function buildOutput(
 	values: { gauge: number; height: number; yoffset: number; name: string }
 ): { output: GenerateOutput } | { error: string } {
 	const { gauge, height, yoffset, name } = values;
-	if (!state.left) return { error: '请先选择「左轨」零件。' };
+	if (!state.left) return { error: t('ctg.error.need_left') };
 	if (state.rightMode !== 'mirror' && !state.right) {
-		return { error: '请为「右轨」选择零件，或使用「从第一个模型对称」。' };
+		return { error: t('ctg.error.need_right') };
 	}
-	if (!state.tie) return { error: '请选择「枕木」零件。' };
-	if (!Number.isFinite(gauge) || gauge <= 0) return { error: '轨距必须为正数。' };
-	if (!Number.isFinite(height) || height < 0) return { error: '轨道高度必须 ≥ 0。' };
-	if (!Number.isFinite(yoffset)) return { error: '整体 Y 偏移必须为数字。' };
-	if (!name) return { error: '请输入新工作区名称。' };
+	if (!state.tie) return { error: t('ctg.error.need_tie') };
+	if (!Number.isFinite(gauge) || gauge <= 0) return { error: t('ctg.error.gauge_positive') };
+	if (!Number.isFinite(height) || height < 0) return { error: t('ctg.error.height_nonneg') };
+	if (!Number.isFinite(yoffset)) return { error: t('ctg.error.yoffset_number') };
+	if (!name) return { error: t('ctg.error.need_name') };
 
 	// 右轨 = 左轨沿其中心 YZ 平面的镜像（右轨复用左轨的源纹理，只是采样方向翻转）
 	const left = scopeTextureKeys(state.left, 'L');
@@ -446,9 +434,7 @@ function buildOutput(
 	const textureSize = consistentTextureSize([left, right, tie]);
 	if (!textureSize) {
 		return {
-			error:
-				'三个零件（左轨 / 右轨 / 枕木）的纹理分辨率必须一致才能生成。\n\n' +
-				`左轨：${textureLabel(left)}\n右轨：${textureLabel(right)}\n枕木：${textureLabel(tie)}`,
+			error: t('ctg.error.texture_mismatch', [textureLabel(left), textureLabel(right), textureLabel(tie)]),
 		};
 	}
 
@@ -477,7 +463,7 @@ function buildOutput(
 		const textureByKey = createTrackWorkspace(targetFormat, name, textureSize, allTextures);
 		return { output: { config, shapes, textureByKey } };
 	} catch (e: any) {
-		return { error: `创建新工作区失败：${e?.message ?? e}` };
+		return { error: t('ctg.error.workspace_create', e?.message ?? String(e)) };
 	}
 }
 
@@ -500,22 +486,22 @@ export function runGenerateWizard(): Promise<GenerateOutput | null> {
 
 		const config = {
 			id: 'create-track-gen-dialog',
-			title: '机械动力轨道生成器 — 配置',
+			title: t('ctg.dialog.title'),
 			icon: 'train',
 			width: 700,
-			buttons: ['确定', '取消'],
+			buttons: [t('ctg.ok'), t('ctg.cancel')],
 			confirmIndex: 0,
 			cancelIndex: 1,
 			// lines 在前（左列零件），form 在后（右列参数）；.dialog_content 用 grid 排成两列
 			part_order: ['lines', 'form'],
 			lines: [buildLeftColumn()],
 			form: {
-				gauge: { label: '轨距（px）', type: 'number', value: DEFAULT_GAUGE_PX, min: 0.1, step: 0.1, description: '左右钢轨中心距（1/16 方块）。回车按当前输入更新毫米 / 英寸。Create 默认 1600mm ≈ 25.6px。' },
-				gauge_mm: { label: '轨距（毫米）', type: 'number', value: roundDisplay(pxToMM(DEFAULT_GAUGE_PX)), min: 0.1, step: 0.5, description: '输入毫米并回车，自动换算 px 与英寸（1 格方块 = 1000mm）。' },
-				gauge_inch: { label: '轨距（英寸）', type: 'number', value: roundDisplay(pxToInch(DEFAULT_GAUGE_PX)), min: 0.01, step: 0.1, description: '输入英寸并回车，自动换算 px 与毫米（1 英寸 = 25.4mm）。' },
-				height: { label: '轨道高度（px）', type: 'number', value: 2, min: 0, step: 0.5, description: '钢轨底面距枕木底面 / 地面的高度；枕木不抬升。' },
-				yoffset: { label: '整体 Y 偏移（px）', type: 'number', value: 0, step: 0.5, description: '整个模型（含枕木与轨道）的 Y 偏移，默认 0。' },
-				name: { label: '新工作区名称', type: 'text', value: '机械动力轨道', description: '生成结果放入新建的模型工作区。' },
+				gauge: { label: t('ctg.form.gauge'), type: 'number', value: DEFAULT_GAUGE_PX, min: 0.1, step: 0.1, description: t('ctg.form.gauge.desc') },
+				gauge_mm: { label: t('ctg.form.gauge_mm'), type: 'number', value: roundDisplay(pxToMM(DEFAULT_GAUGE_PX)), min: 0.1, step: 0.5, description: t('ctg.form.gauge_mm.desc') },
+				gauge_inch: { label: t('ctg.form.gauge_inch'), type: 'number', value: roundDisplay(pxToInch(DEFAULT_GAUGE_PX)), min: 0.01, step: 0.1, description: t('ctg.form.gauge_inch.desc') },
+				height: { label: t('ctg.form.height'), type: 'number', value: 2, min: 0, step: 0.5, description: t('ctg.form.height.desc') },
+				yoffset: { label: t('ctg.form.yoffset'), type: 'number', value: 0, step: 0.5, description: t('ctg.form.yoffset.desc') },
+				name: { label: t('ctg.form.name'), type: 'text', value: 'track', description: t('ctg.form.name.desc') },
 			},
 			onBuild(node?: HTMLElement) {
 				if (!node) return;
@@ -532,7 +518,7 @@ export function runGenerateWizard(): Promise<GenerateOutput | null> {
 					name: String(formResult.name ?? '').trim(),
 				});
 				if ('error' in result) {
-					Blockbench.showMessageBox({ title: '配置有误', message: result.error, buttons: ['确定'], confirm: 0 });
+					Blockbench.showMessageBox({ title: t('ctg.form.config_error'), message: result.error, buttons: [t('ctg.ok')], confirm: 0 });
 					return false; // 保持对话框打开，让用户修改后重试
 				}
 				finish(result.output);

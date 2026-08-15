@@ -128,7 +128,8 @@ function baseTieGeometry(part: PartModel): { cubes: CubeSpec[]; meshes: MeshSpec
 /**
  * 把三个轨道零件搬进新工作区，作为基础分组：segment_left / segment_right / tie。
  * Create 的弯道渲染使用这三个模型（tie.obj / segment_left.obj / segment_right.obj），
- * 分组内各含对应零件的全部元素（cube 体块 + mesh 组），与 16 种轨道形状并列，便于单独导出。
+ * 分组内各含对应零件的全部元素（cube 体块 + mesh 组），挂到轨道大组 parent 下、
+ * 与 16 种轨道形状并列，便于单独导出。
  *
  * 布局 = z_ortho 直轨「靠近 x 轴那半边」的轨道单元（不再按输出格式偏移）：
  *  - segment_left / segment_right：轨道模型自身的中心（Java 为 xz(8,8)、其他格式为 (0,0)）
@@ -139,6 +140,7 @@ function baseTieGeometry(part: PartModel): { cubes: CubeSpec[]; meshes: MeshSpec
  *    横向居中于 x=0，底面仅加整体 Y 偏移（不抬升）。
  */
 export function buildBaseParts(
+	parent: Group,
 	parts: { left: PartModel; right: PartModel; tie: PartModel },
 	config: TrackConfig,
 	textureByKey?: Map<string, Texture>
@@ -174,6 +176,7 @@ export function buildBaseParts(
 	];
 	return defs.map(({ name, cubes, meshes, offset }) => {
 		const group = new Group({ name }).init();
+		group.addTo(parent);
 		for (const spec of cubes) {
 			const s = offset[0] === 0 && offset[1] === 0 && offset[2] === 0 ? spec : translate([spec], offset)[0];
 			specToCube(s, textureByKey).init().addTo(group);
@@ -187,7 +190,7 @@ export function buildBaseParts(
 }
 
 /**
- * 生成全部形状，挂到父 Group「机械动力轨道」下。
+ * 生成全部形状，挂到父 Group（名字 = 当前工作区名，默认 'track'）下。
  * 每个形状一个子 Group（按 TrackShape id 命名）。
  * 输出工作区为 Java Block/Item 时，把整体几何平移到 xz 平面 (8,8) 处，
  * 保证模型关于画布中心的对称性（同导入时的归一化约定）。
@@ -197,7 +200,9 @@ export function buildBaseParts(
 export function buildAllShapes(shapes: ShapeSpec[], textureByKey?: Map<string, Texture>): Group {
 	const format = (Project as any).format?.id as string | undefined;
 	const offset = outputOffsetForFormat(format);
-	const parent = new Group({ name: '机械动力轨道' }).init();
+	// 大组名 = 当前工作区名（与导出时按工作区名查找一致），缺省 'track'
+	const parentName = String((Project as any).name || '').trim() || 'track';
+	const parent = new Group({ name: parentName }).init();
 	for (const shape of shapes) {
 		const sub = new Group({ name: shape.name, origin: [0, 0, 0] }).init();
 		sub.addTo(parent);

@@ -4,6 +4,7 @@
 
 import { elementsToRaw } from '../build/assembly';
 import { parseBbModel, extractFromElements, type RawElement } from '../logic/parts';
+import { t } from '../i18n';
 import type { PartModel, SourceTexture } from '../logic/types';
 
 /** 导入文件结果的轻量结构（与 Filesystem.FileResult 兼容） */
@@ -20,11 +21,11 @@ export function pickBbModels(): Promise<ImportedFile[] | null> {
 	return new Promise((resolve) => {
 		Filesystem.importFile(
 			{
-				type: '模型文件',
+				type: t('ctg.import.model_type'),
 				extensions: ['bbmodel'],
 				multiple: true,
 				readtype: 'text',
-				title: '选择轨道零件模型（左轨 / 右轨 / 枕木）',
+				title: t('ctg.import.pick_parts_title'),
 			},
 			(files) => {
 				const valid = files
@@ -49,7 +50,7 @@ export function parseImportedBbModel(file: ImportedFile): PartModel {
 	const json = JSON.parse(String(file.content)) as Parameters<typeof parseBbModel>[0];
 	const part = parseBbModel(json);
 	if (part.cubes.length === 0 && !part.hasMesh) {
-		throw new Error(`「${file.name}」没有可用的 elements`);
+		throw new Error(t('ctg.import.no_elements', file.name));
 	}
 	return part;
 }
@@ -58,12 +59,12 @@ export function parseImportedBbModel(file: ImportedFile): PartModel {
 function toBytes(content: string | ArrayBuffer | ArrayBufferView): Uint8Array {
 	if (content instanceof ArrayBuffer) return new Uint8Array(content);
 	if (ArrayBuffer.isView(content)) return new Uint8Array(content.buffer, content.byteOffset, content.byteLength);
-	throw new Error('不支持的文件内容类型');
+	throw new Error(t('ctg.import.unsupported_content'));
 }
 
 /** 从 PNG 二进制读宽高（IHDR 头：signature(8) + 长度(4) + "IHDR"(4)，宽高在偏移 16/20） */
 function pngSize(bytes: Uint8Array): [number, number] {
-	if (bytes.length < 24) throw new Error('无效的 PNG 文件');
+	if (bytes.length < 24) throw new Error(t('ctg.import.invalid_png'));
 	const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	return [v.getUint32(16), v.getUint32(20)];
 }
@@ -83,7 +84,7 @@ function pickSinglePng(title: string, key: string): Promise<SourceTexture | null
 	return new Promise((resolve) => {
 		Filesystem.importFile(
 			{
-				type: '纹理文件',
+				type: t('ctg.import.texture_type'),
 				extensions: ['png'],
 				multiple: false,
 				readtype: 'binary',
@@ -103,7 +104,7 @@ function pickSinglePng(title: string, key: string): Promise<SourceTexture | null
 					const [w, h] = pngSize(bytes);
 					resolve({ key, name: f.name, source: arrayBufferToDataURL(bytes), width: w, height: h });
 				} catch (e: any) {
-					console.error('导入传送门纹理失败', e);
+					console.error(t('ctg.import.portal_failed'), e);
 					resolve(null);
 				}
 			}
@@ -116,7 +117,7 @@ function pickSinglePng(title: string, key: string): Promise<SourceTexture | null
  * 返回 SourceTexture（key 'track'）；用户取消/读不到文件时返回 null。
  */
 export function pickPortalTrackTexture(): Promise<SourceTexture | null> {
-	return pickSinglePng('选择 portal_track 纹理（portal_track.png）', 'track');
+	return pickSinglePng(t('ctg.import.pick_portal_track'), 'track');
 }
 
 /**
@@ -124,7 +125,7 @@ export function pickPortalTrackTexture(): Promise<SourceTexture | null> {
  * 返回 SourceTexture（key 'mip'）；用户取消/读不到文件时返回 null。
  */
 export function pickPortalMipTexture(): Promise<SourceTexture | null> {
-	return pickSinglePng('选择 portal_track_mip 纹理（portal_track_mip.png）', 'mip');
+	return pickSinglePng(t('ctg.import.pick_portal_mip'), 'mip');
 }
 
 /**
@@ -140,7 +141,7 @@ export function extractSelectedPart(project?: ModelProject): PartModel {
 	const format = (proj as any).format?.id as string | undefined;
 	const part = extractFromElements(raws, format);
 	if (part.cubes.length === 0 && !part.hasMesh) {
-		throw new Error('该标签页没有选中任何元素，请先选中一个零件的全部元素');
+		throw new Error(t('ctg.import.no_selection'));
 	}
 	// 收集选中元素（cube 六面 + mesh 面）引用的纹理 UUID
 	const keys = new Set<string>();
@@ -187,22 +188,22 @@ export function pickTabProject(): Promise<ModelProject | null> {
 	return new Promise((resolve) => {
 		const tabs = (ModelProject.all ?? []).filter((p) => p && p.uuid);
 		if (tabs.length === 0) {
-			Blockbench.showQuickMessage('当前没有打开的标签页');
+			Blockbench.showQuickMessage(t('ctg.import.no_tabs'));
 			resolve(null);
 			return;
 		}
 		const commands: Record<string, { text: string; description?: string }> = {};
 		for (const p of tabs) {
 			commands[p.uuid] = {
-				text: p.name || p.getDisplayName?.() || '未命名',
+				text: p.name || p.getDisplayName?.() || t('ctg.import.unnamed'),
 				description: (p as any).format?.name ?? (p as any).format?.id,
 			};
 		}
 		Blockbench.showMessageBox(
 			{
-				title: '选择一个标签页',
-				message: '从当前打开的标签页中选择一个，插件将提取该标签页中已选中的元素作为零件（请先在目标标签页里选中该零件的全部元素）。',
-				buttons: ['取消'],
+				title: t('ctg.import.pick_tab_title'),
+				message: t('ctg.import.pick_tab_message'),
+				buttons: [t('ctg.cancel')],
 				commands,
 			},
 			(button) => {

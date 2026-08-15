@@ -1,35 +1,37 @@
 /**
- * 导出约定 —— 纯逻辑，把轨道大组下的分组映射成 Create/Kuayue 的模型文件命名，
- * 并生成对应的 blockstates JSON。零依赖，可在 Node 中单测。
+ * Export conventions — pure logic that maps the groups under the track parent group into
+ * Create/Kuayue model file names and generates the matching blockstates JSON. Zero dependencies,
+ * Node-testable.
  *
- * 命名参考 assets/tracks/standard/：
- *  - 模型：models/block/track/{轨道id}/{形状}.json（z_ortho / x_ortho / diag / diag_2 /
- *    ascending / teleport / cross_* / tie / segment_left / segment_right）
- *  - blockstates：blockstates/{轨道id}_track.json（MC 要求直接罗列在 blockstates/ 下）
- *  - 纹理：textures/block/track/{轨道id}/{资源名}.png，模型内引用 {命名空间}:block/track/{id}/{资源名}
+ * Naming follows assets/tracks/standard/:
+ *  - models: models/block/track/{trackId}/{shape}.json (z_ortho / x_ortho / diag / diag_2 /
+ *    ascending / teleport / cross_* / tie / segment_left / segment_right)
+ *  - blockstates: blockstates/{trackId}_track.json (MC requires them directly under blockstates/)
+ *  - textures: textures/block/track/{trackId}/{resourceName}.png, referenced in-model as
+ *    {namespace}:block/track/{id}/{resourceName}
  *
- * 约定：
- *  - ascending 只有 s 变体（ascending_south）导出为 ascending.json，其余方向由
- *    blockstates 的 y 旋转表达（an=180 / as=0 / ae=270 / aw=90）。
- *  - teleport 只有 z 方向（teleport）导出为 teleport.json，teleport_x 不导出
- *    （blockstates 用 y 旋转表达所有方向，与 Create/Kuayue 一致）。
+ * Conventions:
+ *  - ascending exports only the s variant (ascending_south) as ascending.json; other directions are
+ *    expressed via blockstate y rotations (an=180 / as=0 / ae=270 / aw=90).
+ *  - teleport exports only the z direction (teleport) as teleport.json; teleport_x is not exported
+ *    (the blockstates express all directions via y rotations, consistent with Create/Kuayue).
  *
- * 四种导出模式（见 EXPORT_MODES）：
- *  - new_java   （1.21.11+）：format_version "1.21.11"，支持多轴旋转 {x,y,z}
- *  - classic_java（1.21.11-）：不加 format_version（匹配 assets 示例），仅单轴旋转
- *  - bedrock     ：minecraft:geometry 方块几何
- *  - obj         ：全部烘焙为单一合并网格的 OBJ
- * 无法导出的元素回退 OBJ（判定见 groupNeedsObj）。
+ * Four export modes (see EXPORT_MODES):
+ *  - new_java    (1.21.11+): format_version "1.21.11", multi-axis rotation {x,y,z}
+ *  - classic_java (1.21.11-): no format_version (matches the assets examples), single-axis rotation only
+ *  - bedrock      : minecraft:geometry block geometry
+ *  - obj          : everything baked into a single merged OBJ mesh
+ * Elements that can't be exported fall back to OBJ (see groupNeedsObj).
  */
 
 import type { CubeFaceDirection, Vec3 } from './types';
 import { rotateVec } from './transform';
 import { t } from '../i18n';
 
-/** 导出模式 */
+/** Export mode */
 export type ExportMode = 'new_java' | 'classic_java' | 'bedrock' | 'obj';
 
-/** 导出模式元数据：id / 标签 / 判定说明（标签与说明经 i18n 本地化） */
+/** Export-mode metadata: id / label / eligibility description (label and description are i18n-localized) */
 export const EXPORT_MODES: { id: ExportMode; label: string; description: string }[] = [
 	{
 		id: 'new_java',
@@ -54,8 +56,9 @@ export const EXPORT_MODES: { id: ExportMode; label: string; description: string 
 ];
 
 /**
- * 平台无关的元素描述符：Blockbench 层从 live Cube / Mesh 抽取后传给纯函数。
- * 面纹理用稳定的 textureKey（Blockbench 层把 Texture 实例映射成 't0'/'t1'…）。
+ * Platform-neutral element descriptors: the Blockbench layer extracts them from live Cubes / Meshes
+ * and passes them to the pure functions. Face textures use a stable textureKey (the Blockbench layer
+ * maps Texture instances to 't0'/'t1'…).
  */
 export interface ExportFaceData {
 	uv?: [number, number, number, number];
@@ -72,7 +75,7 @@ export interface ExportCubeData {
 }
 export interface ExportMeshFaceData {
 	vertices: string[];
-	/** 逐顶点 UV：数组（按 face.vertices 顺序）或对象（按顶点 id） */
+	/** Per-vertex UV: array (in face.vertices order) or object (by vertex id) */
 	uv?: number[] | Record<string, number[]>;
 	textureKey?: string;
 }
@@ -83,27 +86,27 @@ export interface ExportMeshData {
 }
 export type ExportElement = ({ type: 'cube' } & ExportCubeData) | ({ type: 'mesh' } & ExportMeshData);
 
-/** 一形状引用的纹理：key / 资源名 / 像素尺寸 / 位图（data URL） */
+/** A texture referenced by a shape: key / resource name / pixel size / bitmap (data URL) */
 export interface ExportTexture {
 	key: string;
 	resName: string;
 	width: number;
 	height: number;
-	/** base64 data URL（写 PNG 用；纯逻辑层不依赖） */
+	/** Base64 data URL (for writing PNGs; not needed by the pure logic layer) */
 	dataUrl?: string;
 }
 
-/** 非零旋转轴的数量 */
+/** The number of non-zero rotation axes */
 function rotationAxisCount(rotation?: Vec3): number {
 	return rotation ? rotation.filter((v) => v !== 0).length : 0;
 }
 
 /**
- * 判定一个分组在给定模式下是否「无法导出」而回退 OBJ：
- *  - obj 模式：全部回退
- *  - 任一 mesh 元素 → 回退（Java JSON / Bedrock cube 都无法表达三角面）
- *  - classic_java 且任一立方体多轴旋转 → 回退（经典格式元素只能单轴）
- *  - bedrock 且形状引用 >1 张纹理 → 回退（基岩版单几何体单纹理）
+ * Decides whether a group "cannot be exported" in the given mode and must fall back to OBJ:
+ *  - obj mode: everything falls back
+ *  - any mesh element → fall back (neither Java JSON / Bedrock cubes can express triangle faces)
+ *  - classic_java with any multi-axis-rotated cube → fall back (classic format allows single-axis only)
+ *  - bedrock with >1 texture referenced → fall back (Bedrock: one geometry, one texture)
  */
 export function groupNeedsObj(elements: ExportElement[], mode: ExportMode): boolean {
 	if (mode === 'obj') return true;
@@ -130,10 +133,10 @@ export function groupNeedsObj(elements: ExportElement[], mode: ExportMode): bool
 }
 
 /**
- * 元素旋转 → Java 模型 JSON 的 rotation 字段。
- *  - 无旋转 → undefined（不写）
- *  - new_java 且（多轴 或 任一角 >45°）→ {x,y,z,origin}（1.21.11+ 多轴旋转）
- *  - 否则单轴 → {angle,axis,origin}（axis = 唯一非零轴）
+ * Element rotation → Java model JSON rotation field.
+ *  - no rotation → undefined (omitted)
+ *  - new_java with (multi-axis or any angle >45°) → {x,y,z,origin} (1.21.11+ multi-axis rotation)
+ *  - otherwise single-axis → {angle,axis,origin} (axis = the only non-zero axis)
  */
 export function rotationToJava(
 	rotation: Vec3 | undefined,
@@ -153,9 +156,9 @@ export function rotationToJava(
 	};
 }
 
-/** 轨道形状分组 id → 导出的模型文件名；null 表示该分组不单独导出 */
+/** Track-shape group id → exported model file name; null means the group is not exported separately */
 export const TRACK_MODEL_FILES: Record<string, string | null> = {
-	// z_ortho 不导出：shape=zo 由 blockstates 用 x_ortho 旋转 90° 表达
+	// z_ortho is not exported: blockstates express shape=zo by rotating x_ortho 90°
 	z_ortho: null,
 	x_ortho: 'x_ortho.json',
 	diag: 'diag.json',
@@ -168,7 +171,7 @@ export const TRACK_MODEL_FILES: Record<string, string | null> = {
 	teleport_x: null,
 	cross_ortho: 'cross_ortho.json',
 	cross_diag: 'cross_diag.json',
-	// cross_d1_xo / cross_d2_xo 都是「斜轨 + Z 直轨」，zo 方向由 blockstates 90° 旋转表达
+	// cross_d1_xo / cross_d2_xo are both "diagonal + Z straight"; zo directions are blockstate 90° rotations
 	cross_d1_xo: 'cross_d1_xo.json',
 	cross_d1_zo: null,
 	cross_d2_xo: 'cross_d2_xo.json',
@@ -179,26 +182,25 @@ export const TRACK_MODEL_FILES: Record<string, string | null> = {
 };
 
 /**
- * 分组名去掉「（…）」/「(…)」展示后缀，得到形状 id（z_ortho（Z 直轨）→ z_ortho、
- * z_ortho (Z straight track) → z_ortho）。
+ * Strips the 「（…）」/「(…)」 display suffix from a group name to get the shape id
+ * (z_ortho (Z straight track) → z_ortho).
  */
 export function cleanGroupName(name: string): string {
 	return name.split(/[（(]/)[0].trim();
 }
 
-/** 由形状 id 取导出文件名；未知 id / 不导出返回 null */
+/** Export file name for a shape id; null for unknown ids / non-exported shapes */
 export function modelFileName(id: string): string | null {
 	return TRACK_MODEL_FILES[id] ?? null;
 }
 
-/** blockstates 文件名：{轨道id}_track.json */
 export function blockstatesFileName(trackId: string): string {
 	return `${trackId}_track.json`;
 }
 
 /**
- * 纹理资源名：去掉扩展名、小写、非 [a-z0-9_] 替换为 _，并保证在 used 内唯一
- * （重名时追加 _1 / _2 …）。
+ * Texture resource name: strips the extension, lowercases, replaces non-[a-z0-9_] with `_`, and ensures
+ * uniqueness within `used` (appending _1 / _2 … on collision).
  */
 export function textureResourceName(name: string, used: Set<string>): string {
 	const raw = String(name || 'texture')
@@ -214,25 +216,22 @@ export function textureResourceName(name: string, used: Set<string>): string {
 }
 
 /**
- * 模型内纹理资源路径：{命名空间}:{纹理资源路径}/{资源名}。
- * 纹理资源路径（如 block/track/{轨道id}）缺省为 block/track/{轨道id}（Create/Kuayue 惯例）。
+ * In-model texture resource path: {namespace}:{texture resource path}/{resName}.
+ * The texture resource path (e.g. block/track/{trackId}) defaults to block/track/{trackId}
+ * (Create/Kuayue convention).
  */
 export function textureResourcePath(namespace: string, trackId: string, resName: string, texturePath?: string): string {
 	return `${namespace}:${texturePath ?? `block/track/${trackId}`}/${resName}`;
 }
 
 /**
- * 轨道形状在 blockstates 里的 shape 键 → 模型文件名（+ y 旋转）。
- * 与 Create/Kuayue 的 track 块约定一致（参考 assets/tracks/standard blockstates）。
- */
-/**
- * 轨道形状在 blockstates 里的 shape 键 → 模型文件名（+ y 旋转）。
- * 与 Create/Kuayue 的 track 块约定一致（参考 assets/tracks/meter blockstates）：
- *  - zo（Z 直轨）→ x_ortho 旋转 90°（不单独生成 z_ortho 模型）
- *  - cross 的 xo / zo 方向都由 cross_d1_xo / cross_d2_xo 经 90° 旋转表达
- *    （模型几何都是「斜轨 + Z 直轨」：cross_d1_xo=负对角、cross_d2_xo=正对角）
- *    cr_pdx→cross_d1_xo y:90、cr_pdz→cross_d2_xo y:180、
- *    cr_ndx→cross_d2_xo y:270、cr_ndz→cross_d1_xo y:0
+ * Track-shape blockstate shape key → model file name (+ y rotation).
+ * Follows the Create/Kuayue track block convention (see assets/tracks/meter blockstates):
+ *  - zo (Z straight) → x_ortho rotated 90° (z_ortho model not generated separately)
+ *  - cross xo / zo directions are expressed via 90° rotations of cross_d1_xo / cross_d2_xo
+ *    (both geometries are "diagonal + Z straight": cross_d1_xo = negative diagonal, cross_d2_xo = positive)
+ *    cr_pdx→cross_d1_xo y:90, cr_pdz→cross_d2_xo y:180,
+ *    cr_ndx→cross_d2_xo y:270, cr_ndz→cross_d1_xo y:0
  */
 const BLOCKSTATE_SHAPES: { shape: string; model: string; y?: number }[] = [
 	{ shape: 'zo', model: 'x_ortho', y: 90 },
@@ -256,10 +255,10 @@ const BLOCKSTATE_SHAPES: { shape: string; model: string; y?: number }[] = [
 ];
 
 /**
- * 生成轨道对应的 blockstates JSON 对象。
- * 变体组合 = shape × turn × waterlogged（与 Create 轨道块的状态一致），
- * shape=none 指向空气模型，其余指向 {命名空间}:{模型资源路径}/{模型}（缺省 block/track/{轨道id}）。
- * modelPath 为模型资源路径（如自定义模型导出路径时传入），保证引用跟随。
+ * Builds the track's blockstates JSON object. Variants combine shape × turn × waterlogged (matching
+ * Create's track block states); shape=none points at the air model, the rest point at
+ * {namespace}:{model resource path}/{model} (default block/track/{trackId}). modelPath is the model
+ * resource path (pass it for custom model export paths) so references follow.
  */
 export function buildBlockstates(
 	namespace: string,
@@ -282,9 +281,9 @@ export function buildBlockstates(
 	return { variants };
 }
 
-// ── Java 模型 JSON（经典 / 1.21.11+ 新格式）──────────────────────────
+// ── Java model JSON (classic / 1.21.11+ new format) ──────────────────────────
 
-/** 单个立方体 → Java JSON element（UV 从像素换算为 16 单位制） */
+/** Single cube → Java JSON element (UV converted from pixels to the 16-unit system) */
 function cubeToJavaElement(
 	cube: ExportCubeData,
 	texIndex: Record<string, string>,
@@ -312,10 +311,10 @@ function cubeToJavaElement(
 }
 
 /**
- * 构建 Java 模型 JSON：
- *  - new_java：加 format_version "1.21.11"，多轴旋转 {x,y,z}
- *  - classic_java：不加 format_version（匹配 Create/Kuayue 示例），仅单轴旋转
- * 传入 elements 应为已判定可导出的立方体（mesh 已回退 OBJ）。
+ * Builds the Java model JSON:
+ *  - new_java: adds format_version "1.21.11", multi-axis rotation {x,y,z}
+ *  - classic_java: no format_version (matching Create/Kuayue examples), single-axis rotation only
+ * The passed elements must already be eligible cubes (meshes fell back to OBJ).
  */
 export function buildJavaModelJson(opts: {
 	mode: ExportMode;
@@ -324,7 +323,7 @@ export function buildJavaModelJson(opts: {
 	textureSize: [number, number];
 	namespace: string;
 	trackId: string;
-	/** texture key → 资源目录（缺省 block/track/{trackId}） */
+	/** texture key → resource directory (default block/track/{trackId}) */
 	texturePathOf?: Record<string, string>;
 }): Record<string, unknown> {
 	const texIndex: Record<string, string> = {};
@@ -350,15 +349,15 @@ export function buildJavaModelJson(opts: {
 	return json;
 }
 
-// ── OBJ（单一合并网格，位于根下）─────────────────────────────────────
+// ── OBJ (single merged mesh, at the root) ───────────────────────────────────
 
-/** 立方体 8 个角（0-7）各坐标取 from(0) 还是 to(1) —— 与 Blockbench getGlobalVertexPositions 顺序一致 */
+/** Cube's 8 corners (0-7): whether each coord takes from(0) or to(1) — matching Blockbench's getGlobalVertexPositions order */
 const OBJ_CUBE_VERTEX_PICK: [number, number, number][] = [
 	[1, 1, 1], [1, 1, 0], [1, 0, 1], [1, 0, 0],
 	[0, 1, 0], [0, 1, 1], [0, 0, 0], [0, 0, 1],
 ];
 
-/** 面方向 → 组成该面的 4 个角（1 基，索引对应 OBJ_CUBE_VERTEX_PICK） */
+/** Face direction → the 4 corners forming it (1-based, indexing OBJ_CUBE_VERTEX_PICK) */
 const OBJ_FACE_CORNERS: Record<CubeFaceDirection, number[]> = {
 	north: [2, 5, 7, 4],
 	east: [1, 2, 4, 3],
@@ -368,7 +367,7 @@ const OBJ_FACE_CORNERS: Record<CubeFaceDirection, number[]> = {
 	down: [8, 3, 4, 7],
 };
 
-/** 立方体第 idx 个角的世界坐标（px；含绕 origin 的旋转） */
+/** The world coordinate of a cube's idx-th corner (px; includes the rotation about origin) */
 function objCorner(cube: ExportCubeData, idx: number): Vec3 {
 	const pick = OBJ_CUBE_VERTEX_PICK[idx];
 	const v: Vec3 = [pick[0] ? cube.to[0] : cube.from[0], pick[1] ? cube.to[1] : cube.from[1], pick[2] ? cube.to[2] : cube.from[2]];
@@ -379,7 +378,7 @@ function objCorner(cube: ExportCubeData, idx: number): Vec3 {
 	return [r[0] + origin[0], r[1] + origin[1], r[2] + origin[2]];
 }
 
-/** 面 UV → 4 条 vt（像素 / 纹理尺寸，v 翻到底部；按 face.rotation 90° 步进轮转） */
+/** Face UV → 4 vt lines (pixels / texture size, v flipped to bottom; rotated 90° steps per face.rotation) */
 function objFaceVt(face: ExportFaceData, size: [number, number]): string[] {
 	const W = size[0] || 16;
 	const H = size[1] || 16;
@@ -398,7 +397,7 @@ function objFaceVt(face: ExportFaceData, size: [number, number]): string[] {
 	return J;
 }
 
-/** 由三角形三点（f 行顺序）算外法向 */
+/** Outward normal from three triangle points (f row order) */
 function triNormal(a: Vec3, b: Vec3, c: Vec3): Vec3 {
 	const ab: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
 	const ac: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
@@ -406,10 +405,12 @@ function triNormal(a: Vec3, b: Vec3, c: Vec3): Vec3 {
 }
 
 /**
- * 把一组的全部元素烘焙成单一合并网格的 OBJ + MTL：
- *  - 顶点坐标 px/16（方块单位）；vt 像素/尺寸且 v 翻底；vn 由三角形外法向计算
- *  - 整个文件只有一根 o 对象（无每元素 o / 无 g 分组），位于根下 —— Forge 加载器可整体读取
- *  - 纹理通过 usemtl m_<key> 区分，MTL 每张纹理一个 newmtl + map_Kd {ns}:block/track/{id}/{res}
+ * Bakes a group's elements into a single merged OBJ + MTL:
+ *  - vertex coords in px/16 (block units); vt pixel/size with v flipped; vn from triangle outward normals
+ *  - a single `o` object for the whole file (no per-element o / no g groups) at the root — the Forge
+ *    loader can read it as one mesh
+ *  - textures distinguished via usemtl m_<key>; MTL with one newmtl + map_Kd {ns}:block/track/{id}/{res}
+ *    per texture
  */
 export function buildObj(opts: {
 	elements: ExportElement[];
@@ -417,9 +418,9 @@ export function buildObj(opts: {
 	sizeOf: Record<string, [number, number]>;
 	namespace: string;
 	trackId: string;
-	/** MTL 文件名（用于 mtllib 行），缺省 materials.mtl */
+	/** MTL file name (for the mtllib line), default materials.mtl */
 	mtlName?: string;
-	/** texture key → 资源目录（缺省 block/track/{trackId}） */
+	/** texture key → resource directory (default block/track/{trackId}) */
 	texturePathOf?: Record<string, string>;
 }): { obj: string; mtl: string } {
 	const resOf: Record<string, string> = Object.fromEntries(opts.textures.map((t) => [t.key, t.resName]));
@@ -468,14 +469,14 @@ export function buildObj(opts: {
 					objLines.push(t);
 					vtIdx++;
 				}
-				// 两个三角共用同一法线（共面）
+				// The two triangles share the same normal (coplanar)
 				const vn = pushVn(corners[O[2] - 1], corners[O[1] - 1], corners[O[0] - 1]);
 				useMtl(face.textureKey);
 				objLines.push(`f ${fmt(baseV + O[2] - 1)}/${fmt(baseVt + 3)}/${fmt(vn)} ${fmt(baseV + O[1] - 1)}/${fmt(baseVt + 2)}/${fmt(vn)} ${fmt(baseV + O[0] - 1)}/${fmt(baseVt + 1)}/${fmt(vn)}`);
 				objLines.push(`f ${fmt(baseV + O[3] - 1)}/${fmt(baseVt + 4)}/${fmt(vn)} ${fmt(baseV + O[2] - 1)}/${fmt(baseVt + 3)}/${fmt(vn)} ${fmt(baseV + O[0] - 1)}/${fmt(baseVt + 1)}/${fmt(vn)}`);
 			}
 		} else {
-			// mesh：顶点 + 面并入同一根对象
+			// mesh: vertices + faces merged into the same root object
 			const vertGlobal: Record<string, number> = {};
 			for (const [id, pos] of Object.entries(el.vertices)) vertGlobal[id] = pushV(pos);
 			for (const face of Object.values(el.faces)) {
@@ -521,15 +522,15 @@ export function buildObj(opts: {
 	return { obj: objLines.join('\n'), mtl: mtlLines.join('\n') };
 }
 
-/** forge:obj 引用 JSON（.obj 模型 + flip_v + textures），与 Create/Kuayue 示例一致 */
+/** forge:obj reference JSON (.obj model + flip_v + textures), matching the Create/Kuayue examples */
 export function buildObjReferenceJson(opts: {
 	namespace: string;
 	trackId: string;
 	shape: string;
 	textures: ExportTexture[];
-	/** texture key → 资源目录（缺省 block/track/{trackId}） */
+	/** texture key → resource directory (default block/track/{trackId}) */
 	texturePathOf?: Record<string, string>;
-	/** 模型资源路径（blockstates 引用用 {命名空间}:path/file 的 path；缺省 block/track/{trackId}） */
+	/** Model resource path (the path part of {namespace}:path/file used by blockstate references; default block/track/{trackId}) */
 	modelPath?: string;
 }): Record<string, unknown> {
 	const texMap: Record<string, string> = {};
@@ -549,13 +550,14 @@ export function buildObjReferenceJson(opts: {
 	return json;
 }
 
-// ── 基岩版几何 ────────────────────────────────────────────────────────
+// ── Bedrock geometry ────────────────────────────────────────────────────────
 
 /**
- * 把一组的立方体构建成 minecraft:geometry 方块模型。
- * 参考 Blockbench o6/r6：立方体 origin[0] 取反（X 镜像）、带旋转时 pivot=旋转原点（X 镜像）+
- * rotation 的 rx/ry 取反；per-face uv（uv + uv_size + uv_rotation），up/down 面 uv+=size、size 取反。
- * 传参 elements 应为已判定可导出的立方体（mesh / 多纹理形状已回退 OBJ）。
+ * Builds a group's cubes into a minecraft:geometry block model.
+ * Following Blockbench o6/r6: cube origin[0] negated (X mirror), pivot = rotation origin (X-mirrored)
+ * with rx/ry of the rotation negated when rotated; per-face uv (uv + uv_size + uv_rotation), with
+ * up/down faces uv+=size and size negated. The passed elements must already be eligible cubes
+ * (mesh / multi-texture shapes fell back to OBJ).
  */
 export function buildBedrockGeometry(opts: {
 	identifier: string;
@@ -620,9 +622,10 @@ export function buildBedrockGeometry(opts: {
 }
 
 /**
- * 基岩版方块定义（blocks.json，行为包根目录；legacy 聚合格式）。
- * 每形状一个块：identifier {ns}:{trackId}_{shape}，geometry + material_instances 指向该形状的纹理。
- * texturePath 是相对 textures/ 目录的资源路径（写入 textures/{texturePath}.png → "{texturePath}"）。
+ * Bedrock block definitions (blocks.json, at the behavior pack root; legacy aggregated format).
+ * One block per shape: identifier {ns}:{trackId}_{shape}, geometry + material_instances pointing at
+ * that shape's texture. texturePath is the resource path relative to the textures/ directory (written
+ * to textures/{texturePath}.png → "{texturePath}").
  */
 export function buildBedrockBlocksJson(opts: {
 	namespace: string;

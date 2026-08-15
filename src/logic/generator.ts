@@ -1,14 +1,17 @@
 /**
- * 轨道形状组装 —— 核心纯逻辑。
+ * Track shape assembly — the core pure logic.
  *
- * 输入 TrackConfig（三零件 + 轨距 + 高度），输出全部 TrackShape 的 CubeSpec 集合。
- * 组装规则：
- *  - 直轨默认沿 Z 方向铺设在 xz 平面，左右钢轨中心在 x = ±轨距/2，整体抬升高度。
- *  - 轨道默认生成一个完整方块（16px）的长度，钢轨零件不足时沿 Z 平铺补足（Create
- *    的钢轨段是 8px 的半块段，一个方块需要两块）。
- *  - 其余形状由直轨经 rotation 派生（参考 Kuayue 的 diag_template/ascending_template，
- *    用 Cube.rotation + origin 表达，而非重算旋转后坐标）。
- * 纯函数，可在 Node 中单测。
+ * Takes a TrackConfig (three parts + gauge + height) and outputs the CubeSpec sets for every
+ * TrackShape.
+ * Assembly rules:
+ *  - Straight track is laid along Z on the xz plane by default, with the left/right rail centers at
+ *    x = ±gauge/2, lifted by the height.
+ *  - A track is generated as one full block (16 px) by default; if a rail part is shorter it is tiled
+ *    along Z to fill the length (Create's rail segments are 8 px half-blocks, two per block).
+ *  - The other shapes are derived from the straight track by rotation (following Kuayue's
+ *    diag_template/ascending_template, expressed via Cube.rotation + origin rather than recomputed
+ *    coordinates).
+ * Pure functions, Node-testable.
  */
 
 import { computeBBox } from './parts';
@@ -16,36 +19,37 @@ import { bakePartAxisAligned, bakeRotateY90, cloneCubes, lift, rotateVec, rotate
 import { t } from '../i18n';
 import type { CubeFaceDirection, CubeSpec, FaceSpec, PartModel, ShapeSpec, TrackConfig, Vec3 } from './types';
 
-/** 形状展示名：id + 本地化括号后缀（cleanGroupName 会去掉后缀取回 id） */
+/** Shape display name: id + localized parenthesis suffix (cleanGroupName strips the suffix to get the id back) */
 function shapeDisplay(id: string, descKey: string, vars?: string | number): string {
 	return `${id}${t(descKey, vars)}`;
 }
 
-/** 生成配置：轨道长度与枕木间距 */
+/** Generation options: track length and tie interval */
 export interface GeneratorOptions {
-	/** 轨道沿铺设方向的总长度（px），缺省为 16（一个完整方块） */
+	/** Total track length along the laying direction (px), default 16 (one full block) */
 	length?: number;
-	/** 枕木间距（px） */
+	/** Tie spacing (px) */
 	tieInterval?: number;
 }
 
 const DEFAULT_TIE_INTERVAL = 8;
-/** 默认轨道长度：一个完整方块（16px） */
+/** Default track length: one full block (16px) */
 const DEFAULT_TRACK_LENGTH = 16;
-/** 斜轨需要的枕木数 / 钢轨段数（Create 对角轨道用 3 段 8px 钢轨 + 3 根枕木覆盖方块对角） */
+/** Tie / rail-segment count needed for the diagonal (Create's diagonal track uses 3 × 8px segments + 3 ties to span the block diagonal) */
 const DIAGONAL_TIE_COUNT = 3;
 
-/** 斜轨长度：覆盖方块对角需要 3 段 / 3 枕木（默认 3×8=24px，直轨 16px 的 1.5 倍） */
+/** Diagonal length: 3 segments / 3 ties to span the block diagonal (default 3×8=24px, 1.5× the 16px straight) */
 function diagonalLength(opts: GeneratorOptions): number {
 	return DIAGONAL_TIE_COUNT * (opts.tieInterval ?? DEFAULT_TIE_INTERVAL);
 }
 
-/** 轨道铺设方向 */
+/** Track laying direction */
 export type TrackAxis = 'x' | 'z';
 
 /**
- * 计算轨道沿铺设方向的跨度。缺省长度取 16（一个完整方块），并把轨道居中于原点
- * （z 从 -length/2 到 +length/2），保证旋转后的形状也以原点为中心。
+ * The track's span along the laying direction. The default length is 16 (one full block) and the track
+ * is centered on the origin (z from −length/2 to +length/2), so rotated shapes stay centered on the
+ * origin too.
  */
 function trackSpan(opts: GeneratorOptions = {}): { start: number; length: number } {
 	const length = opts.length ?? DEFAULT_TRACK_LENGTH;
@@ -53,9 +57,9 @@ function trackSpan(opts: GeneratorOptions = {}): { start: number; length: number
 }
 
 /**
- * 把零件沿 Z 轴平铺，覆盖 [start, start+length]。
- * 若零件本身不足一个轨道长度（如 Create 的 8px 半块钢轨段），会自动平铺补齐。
- * 用零件 bbox 的 z 最小值做对齐，因此零件是否居中不影响平铺结果。
+ * Tiles a part along Z to cover [start, start+length]. A part shorter than one track length (e.g.
+ * Create's 8px half-block rail segments) is tiled automatically to fill. Alignment uses the part
+ * bbox's minimum z, so an off-center part tiles correctly.
  */
 function tileAlongZ(part: PartModel, start: number, length: number): CubeSpec[] {
 	const partLen = part.bbox.max[2] - part.bbox.min[2];
@@ -69,11 +73,11 @@ function tileAlongZ(part: PartModel, start: number, length: number): CubeSpec[] 
 }
 
 /**
- * 放置左右钢轨：左轨中心 x=-g/2、右轨 x=+g/2，整体抬升 heightPx。
- * 以零件归一化后的实际横向中心（xMid）为基准对齐，零件未精确居中时也不会错位。
- * 钢轨沿 Z 平铺覆盖整个轨道长度。
- * 先烘焙零件的轴对齐旋转（如 [0,-90,0]），使钢轨成为沿 Z 的普通盒子——否则派生形状
- * 叠加组旋转时会覆盖钢轨自身旋转，导致钢轨与枕木平行。
+ * Places the left/right rails: left center x=-g/2, right center x=+g/2, lifted by heightPx. Aligned to
+ * the part's normalized lateral center (xMid), so an imperfectly centered part lands correctly. Rails
+ * are tiled along Z over the full track length. The part's axis-aligned rotation (e.g. [0,-90,0]) is
+ * baked first so the rails become plain Z-aligned boxes — otherwise derived shapes would overwrite the
+ * rails' own rotation when composing group rotations, leaving the rails parallel to the ties.
  */
 export function placeRails(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSpec[] {
 	const { gaugePx, heightPx, parts } = cfg;
@@ -88,9 +92,10 @@ export function placeRails(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeS
 }
 
 /**
- * 确保枕木长轴跨 X（与沿 Z 铺设的钢轨垂直）。若枕木零件长轴沿 Z（与轨道平行），
- * 绕 Y 烘焙旋转 90° 使其跨 X；带自身旋转的零件信任其朝向（解析器已保留），不自动旋转。
- * 供 placeTies（轨道形状）与 buildBaseParts（弯道基础分组）共用。
+ * Ensures the tie's long axis crosses X (perpendicular to the Z-laid rails). If the tie part's long
+ * axis is along Z (parallel to the track), it is baked-rotated 90° about Y; parts carrying their own
+ * rotation are trusted (already preserved by the parser) and not auto-rotated. Shared by placeTies
+ * (track shapes) and buildBaseParts (curve base groups).
  */
 export function orientTiePerpendicular(tie: PartModel): CubeSpec[] {
 	if (tie.cubes.some((c) => c.rotation)) return tie.cubes;
@@ -106,15 +111,16 @@ export function orientTiePerpendicular(tie: PartModel): CubeSpec[] {
 }
 
 /**
- * 放置枕木：沿轨道方向（Z）从起点到终点按 tieInterval 循环铺。
- * 枕木横向居中（x=0）、纵向按自身中心对齐到铺设位置，长轴自动调整为跨 X（垂直钢轨）。
- * 注意：heightPx 是「钢轨距底面的高度」，只作用于钢轨，枕木不抬升、底部直接落在 xz 平面。
+ * Places ties: looped along the track direction (Z) from start to end every tieInterval. Ties are
+ * centered laterally (x=0), aligned lengthwise to their own center, and their long axis is
+ * auto-oriented to cross X (perpendicular to the rails). Note: heightPx is the "rail height above the
+ * bottom face" and applies to the rails only — ties are not lifted and sit directly on the xz plane.
  */
 export function placeTies(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSpec[] {
 	const { parts } = cfg;
 	const tieInterval = opts.tieInterval ?? DEFAULT_TIE_INTERVAL;
 	const { start, length } = trackSpan(opts);
-	// 先烘焙枕木自身的轴对齐旋转，再按视觉几何判断是否需要转成跨 X（垂直钢轨）
+	// Bake the tie's own axis-aligned rotation first, then decide by visual geometry whether to turn it across X
 	const baked = bakePartAxisAligned(parts.tie);
 	const tieBase = orientTiePerpendicular(baked);
 	const tieCenterZ = (baked.bbox.min[2] + baked.bbox.max[2]) / 2;
@@ -126,7 +132,6 @@ export function placeTies(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSp
 	return ties;
 }
 
-/** 计算 CubeSpec[] 的包围盒中心 */
 export function centerOf(cubes: CubeSpec[]): Vec3 {
 	const bbox = computeBBox(cubes);
 	return [
@@ -137,9 +142,9 @@ export function centerOf(cubes: CubeSpec[]): Vec3 {
 }
 
 /**
- * 计算 CubeSpec[] 渲染（应用各自 rotation 后）的最低 y 坐标。
- * computeBBox 只读 from/to，忽略 rotation；带旋转的 cube（如 ascending 的 -45°X）
- * 的实际最低点需要把 8 个角点经 origin + R·(局部−origin) 换算到世界坐标。
+ * The lowest rendered y of CubeSpec[] (applying each cube's own rotation). computeBBox only reads
+ * from/to and ignores rotation; the true lowest point of a rotated cube (e.g. ascending's −45°X) needs
+ * the 8 corners transformed to world coordinates via origin + R·(local−origin).
  */
 function renderedMinY(cubes: CubeSpec[]): number {
 	let minY = Infinity;
@@ -157,22 +162,18 @@ function renderedMinY(cubes: CubeSpec[]): number {
 	return minY;
 }
 
-/**
- * 直轨（沿 Z）：左右钢轨 + 枕木。
- */
+/** Straight track (along Z): left/right rails + ties. */
 export function straightZ(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSpec[] {
 	return [...placeRails(cfg, opts), ...placeTies(cfg, opts)];
 }
 
-/**
- * 直轨（沿 X）：把 Z 直轨绕整组中心旋转 90°（Y 轴）。
- */
+/** Straight track (along X): rotates the Z track 90° (Y axis) about the whole group's center. */
 export function straightX(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSpec[] {
 	const zs = straightZ(cfg, opts);
 	return rotateY(zs, 90, centerOf(zs));
 }
 
-/** 直轨形状（x_ortho / z_ortho） */
+/** Straight shape (x_ortho / z_ortho) */
 export function straight(cfg: TrackConfig, axis: TrackAxis = 'z', opts: GeneratorOptions = {}): ShapeSpec {
 	const cubes = axis === 'z' ? straightZ(cfg, opts) : straightX(cfg, opts);
 	return {
@@ -183,10 +184,11 @@ export function straight(cfg: TrackConfig, axis: TrackAxis = 'z', opts: Generato
 }
 
 /**
- * 45° 斜轨：把 Z 直轨绕整组中心绕 Y 旋转 ±45°。
- * diag = +45°（PD 正对角），diag_2 = -45°（ND 负对角）。
- * 斜轨覆盖方块对角，需要 3 段钢轨 / 3 根枕木（长度 = 3 × 枕木间距，默认 24px），
- * 而非直轨的 2 段 / 2 根（16px）。
+ * 45° diagonal: rotates the Z track ±45° about the group center (Y axis).
+ * diag = +45° (PD positive diagonal), diag_2 = −45° (ND negative diagonal).
+ * A diagonal spans the block's diagonal, needing 3 rail segments / 3 ties
+ * (length = 3 × tie interval, default 24 px) instead of the straight track's 2 segments / 2 ties
+ * (16 px).
  */
 export function diagonal(cfg: TrackConfig, mirror: boolean, opts: GeneratorOptions = {}): ShapeSpec {
 	const zs = straightZ(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
@@ -200,27 +202,28 @@ export function diagonal(cfg: TrackConfig, mirror: boolean, opts: GeneratorOptio
 }
 
 /**
- * 上升轨道：把 Z 直轨绕 X 轴旋转 -45°，枢轴在轨道中心（xz 平面即 Java 模型的
- * 方块中心 (8,8)），轨道绕方块中心整体倾斜。yaw 决定朝向（blockstate：
- * south=0 / north=180 / east=270 / west=90）。
+ * Ascending track: rotates the Z track −45° about the X axis, pivot at the track center (the block
+ * center (8,8) on the xz plane in Java models), tilting the whole track about the block center. yaw
+ * decides the facing (blockstate: south=0 / north=180 / east=270 / west=90).
  *
- * 注意：倾斜与转向必须共用同一个枢轴。若用 centerOf 作为转向枢轴，会覆盖
- * 倾斜的枢轴，导致轨道绕整段中心倾斜（前段下沉、后段才抬升）——旋转错误。
- * Blockbench 的 Cube.rotation 按 Ry(yaw)·Rx(-45) 围绕同一 origin 合成，语义上即
- * 「先沿铺设方向倾斜，再整体转向」。
- * 枢轴取轨道 z 方向的中心（Java 画布 xz (8,8)），而非前缘 (8,0)：这样上升轨的
- * 旋转轴落在方块中心，与 Create/Kuayue 的 ascending_template 约定一致。
+ * Note: the tilt and the turn must share the same pivot. Using centerOf as the turn pivot would
+ * overwrite the tilt pivot, tilting the track about the whole segment's center (front end sinks, only
+ * the back rises) — a rotation bug. Blockbench's Cube.rotation composes Ry(yaw)·Rx(−45) about the same
+ * origin, semantically "tilt along the laying direction, then turn the whole thing".
+ * The pivot is the track's z-center (Java canvas xz (8,8)), not the front edge (8,0): this puts the
+ * ascending track's rotation axis at the block center, matching Create/Kuayue's ascending_template.
  *
- * 上升轨与斜轨一样覆盖更长的铺设距离：长度 = 3 × 枕木间距（默认 24px，3 段钢轨
- * / 3 根枕木），而非直轨的 16px（2 段 / 2 根）。
+ * An ascending track covers a longer span than the straight like the diagonal: length = 3 × tie
+ * interval (default 24 px, 3 rail segments / 3 ties), not the straight's 16 px (2/2).
  *
- * 绕中心 -45° 倾斜后，轨道下端会沉入 xz 平面以下（下方枕木最低点 y<0）。
- * 用户可定义两个 y 方向偏移：heightPx（钢轨高度，straightZ 内已施加）与
- * wholeModelYOffset（整体 Y 偏移，allShapes 的 applyWholeOffset 在形状返回后统一施加）。
- * 这里抬升到「整体 Y 偏移生效之后」最低点恰好落在 xz 平面上（y≥0）：
- *  - 整体偏移 ≥0：抬到 0，随后整体再上升 wholeY（与其他形状一致）；
- *  - 整体偏移 <0：多抬 -wholeY，把整体下沉的 ascending 顶回平面。
- * lift 同时平移 from/to 与 origin，渲染几何整体均匀上移，倾斜形状保持不变。
+ * After the −45° tilt about the center, the lower end dips below the xz plane (lowest tie point y<0).
+ * There are two user-definable Y offsets: heightPx (rail height, applied inside straightZ) and
+ * wholeModelYOffset (whole-model Y offset, applied uniformly by allShapes' applyWholeOffset after the
+ * shape returns). Here the track is lifted so the lowest point lands exactly on the xz plane (y≥0)
+ * **after the whole-model Y offset takes effect**:
+ *  - offset ≥0: lift to 0, the whole model then rises with wholeY (consistent with other shapes);
+ *  - offset <0: lift extra −wholeY, pushing the sunken ascending track back to the plane.
+ * lift shifts from/to and origin together, so the tilted shape is preserved.
  */
 export function ascending(
 	cfg: TrackConfig,
@@ -229,7 +232,7 @@ export function ascending(
 ): ShapeSpec {
 	const zs = straightZ(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
 	const bbox = computeBBox(zs);
-	// 枢轴取轨道 xz 中心（Java 模式下即方块中心 (8,8)），Y 在轨道高度处
+	// Pivot = the track's xz center (the block center (8,8) in Java mode), Y at rail height
 	const pivot: Vec3 = [
 		(bbox.min[0] + bbox.max[0]) / 2,
 		cfg.heightPx,
@@ -239,10 +242,11 @@ export function ascending(
 	const tilted = rotateY(rotateX(zs, -45, pivot), yaw[dir], pivot);
 	const wholeY = cfg.wholeModelYOffset ?? 0;
 	let cubes = tilted;
-	// 抬升量覆盖整体 Y 偏移：整体偏移为负时多抬，保证「整体偏移生效后」最低点 ≥ 0
+	// Lift amount covers the whole-model Y offset: with a negative offset, lift extra to guarantee the
+	// lowest point (after the offset) is ≥ 0
 	const need = -(renderedMinY(cubes) + Math.min(0, wholeY));
 	if (need > 0) cubes = lift(cubes, need);
-	// 兜底：浮点误差下最终最低点（含整体偏移）仍 <0 再补抬升
+	// Fallback: if the final lowest point (including the whole offset) is still <0 under float error, lift again
 	const finalMin = renderedMinY(cubes) + wholeY;
 	if (finalMin < 0) cubes = lift(cubes, -finalMin);
 	return {
@@ -253,8 +257,8 @@ export function ascending(
 }
 
 /**
- * 计算枕木的横向半宽与顶部高度（烘焙自身旋转 + 必要时转成跨 X 后）。
- * 传送门覆层按这个范围把枕木左/右半边包住（不包含钢轨）。
+ * The tie's lateral half-width and top height (after baking its own rotation and, if needed, turning it
+ * across X). The portal overlays use this extent to wrap each half of the ties (excluding the rails).
  */
 function tieWrapExtent(cfg: TrackConfig): { halfW: number; top: number } {
 	const baked = bakePartAxisAligned(cfg.parts.tie);
@@ -267,8 +271,8 @@ function tieWrapExtent(cfg: TrackConfig): { halfW: number; top: number } {
 }
 
 /**
- * 把一组 Cube 的所有面纹理替换为指定源 key（保留原 UV），
- * 用于 teleport 形状：轨道/枕木统一铺 portal_track。
+ * Remaps all faces of a cube set to the given source key (keeping the original UV),
+ * used by the teleport shape: track/tie uniformly covered with portal_track.
  */
 function remapAllFaces(cubes: CubeSpec[], textureKey: string): CubeSpec[] {
 	return cubes.map((c) => {
@@ -283,13 +287,15 @@ function remapAllFaces(cubes: CubeSpec[], textureKey: string): CubeSpec[] {
 }
 
 /**
- * 生成两个传送门覆层块（teleport_left / teleport_right）。
+ * Builds the two portal overlay cubes (teleport_left / teleport_right).
  *
- * 结构参考 Create 原版 teleport.json（assets/teleport.json）：整个模型铺 portal_track，
- * 两个覆层（原模型 cube5 / cube6）贴 portal_track_mip。覆层把枕木左/右半边包住
- * （各包半边），不包含钢轨（钢轨在枕木上方独立生成，覆层不覆盖它），贴 mip 纹理
- * （全纹理铺满各面）。覆层沿铺设方向铺满整段轨道，尺寸取枕木包围盒 + 包覆余量。
- * 返回 null 表示未配置传送门覆层（cfg.portal 未提供），teleport() 退化为纯直轨。
+ * Structure follows Create's original teleport.json (assets/teleport.json): the whole model uses
+ * portal_track, the two overlays (original cube5 / cube6) use portal_track_mip. Each overlay wraps one
+ * half of the ties (each wraps a half), excluding the rails (the rails are generated independently
+ * above the ties and are not covered), textured with the mip (full texture across each face). The
+ * overlays fill the whole track segment along the laying direction; size = tie bounding box + wrap
+ * margin. Returns null when no portal overlay is configured (cfg.portal missing), and teleport()
+ * degrades to a plain straight track.
  */
 function buildPortalOverlays(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSpec[] | null {
 	const portal = cfg.portal;
@@ -300,7 +306,7 @@ function buildPortalOverlays(cfg: TrackConfig, opts: GeneratorOptions = {}): Cub
 	const { start, length } = trackSpan(opts);
 	const z0 = start;
 	const z1 = start + length;
-	// 覆层顶 = 枕木顶 + 余量，但不高于钢轨底面（heightPx），保证不包含钢轨
+	// Overlay top = tie top + margin, but no higher than the rail bottom (heightPx), so the rails are not covered
 	const y0 = -m;
 	const y1 = Math.min(top + m, cfg.heightPx);
 	const uv: [number, number, number, number] = [0, 0, portal.mipTextureSize?.[0] ?? 32, portal.mipTextureSize?.[1] ?? 32];
@@ -330,22 +336,22 @@ function buildPortalOverlays(cfg: TrackConfig, opts: GeneratorOptions = {}): Cub
 }
 
 /**
- * 传送门轨道：两张纹理独立可选——
- *  - portal_track 提供时把轨道/枕木铺 portal_track（面纹理重映射，保留 UV）；
- *    缺省用零件自身默认纹理。
- *  - portal_track_mip 提供时生成两个覆层块（teleport_left / teleport_right）贴 mip；
- *    缺省不生成覆层块。
- * 两者都缺省时退化为纯直轨，与 z_ortho / x_ortho 完全一致。
+ * Portal track: two independently optional textures —
+ *  - when portal_track is set, track/tie faces are remapped to it (UV kept); otherwise the parts' own
+ *    default textures are used.
+ *  - when portal_track_mip is set, two overlay cubes (teleport_left / teleport_right) textured with the
+ *    mip are generated; otherwise no overlays.
+ * When neither is set, degrades to a plain straight track identical to z_ortho / x_ortho.
  */
 export function teleport(cfg: TrackConfig, axis: TrackAxis = 'z', opts: GeneratorOptions = {}): ShapeSpec {
 	const zs = straightZ(cfg, opts);
 	const portal = cfg.portal;
 	let all = zs;
-	// portal_track 可选：提供则轨道/枕木统一铺它，否则用零件默认纹理
+	// portal_track optional: when set, cover track/tie with it; otherwise use the parts' default textures
 	if (portal?.trackTexture) {
 		all = remapAllFaces(all, portal.trackTexture);
 	}
-	// portal_track_mip 可选：提供则生成左右覆层块，否则不生成
+	// portal_track_mip optional: when set, generate the left/right overlays; otherwise none
 	const overlays = buildPortalOverlays(cfg, opts) ?? [];
 	all = [...all, ...overlays];
 	const cubes = axis === 'x' ? rotateY(all, 90, centerOf(all)) : all;
@@ -357,16 +363,16 @@ export function teleport(cfg: TrackConfig, axis: TrackAxis = 'z', opts: Generato
 }
 
 /**
- * 十字交叉轨道。kind 对应 TrackShape：
- *  - ortho：Z 直轨 + X 直轨
- *  - diag：正斜轨 + 负斜轨
- *  - pd_zo：正斜轨 + Z 直轨  /  nd_zo：负斜轨 + Z 直轨
+ * Crossing track. kind corresponds to a TrackShape:
+ *  - ortho: Z straight + X straight
+ *  - diag: positive diagonal + negative diagonal
+ *  - pd_zo: positive diagonal + Z straight  /  nd_zo: negative diagonal + Z straight
  *
- * 交叉模型只生成 xo 名字的两个文件（cross_d1_xo / cross_d2_xo），但几何都是
- * 「斜轨 + Z 直轨」：blockstates 里 xo / zo 方向都由它们经 90° 旋转表达（参考
- * Kuayue meter / guard 的 blockstates）。命名与 Create 相反：
- *   cross_d1_xo = 负对角 + Z 直轨，cross_d2_xo = 正对角 + Z 直轨
- * （Create/Kuayue 参考模型里 cross_d1 是负对角、cross_d2 是正对角）。
+ * Only the two xo-named files (cross_d1_xo / cross_d2_xo) are generated, but their geometry is always
+ * "diagonal + Z straight": the blockstates express both xo and zo directions via 90° rotations of them
+ * (following Kuayue meter / guard blockstates). Naming is the opposite of Create's:
+ *   cross_d1_xo = negative diagonal + Z straight, cross_d2_xo = positive diagonal + Z straight
+ * (in Create/Kuayue reference models cross_d1 is the negative diagonal and cross_d2 the positive).
  */
 export function cross(
 	cfg: TrackConfig,
@@ -379,7 +385,7 @@ export function cross(
 			cubes = [...straightZ(cfg, opts), ...straightX(cfg, opts)];
 			break;
 		case 'diag': {
-			// 对角交叉用斜轨长度（3 段 / 3 枕木）
+			// Diagonal crossing uses the diagonal length (3 segments / 3 ties)
 			const zs = straightZ(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
 			const pos = rotateY(zs, 45, centerOf(zs));
 			const neg = rotateY(zs, -45, centerOf(zs));
@@ -408,7 +414,7 @@ export function cross(
 	return { id: idMap[kind], name: nameMap[kind], cubes };
 }
 
-/** 形状定义表：全部 TrackShape 的生成器 */
+/** Shape definition table: the builder for every TrackShape */
 export interface ShapeDef {
 	id: string;
 	name: string;
@@ -416,9 +422,10 @@ export interface ShapeDef {
 }
 
 /**
- * 对形状应用整体 Y 偏移（wholeModelYOffset）。
- * 抬升整个模型（含枕木、钢轨、传送门门框），连旋转枢轴（origin）一起平移。
- * 在 allShapes 统一施加，保证 16 种形状行为一致；各形状生成器保持"居中于原点"的纯几何输出。
+ * Applies the whole-model Y offset (wholeModelYOffset) to a shape: lifts the whole model (ties, rails,
+ * portal frame) and translates the rotation pivots (origin) along with it. Applied uniformly in
+ * allShapes so all 16 shapes behave the same; each shape builder keeps "centered on origin" pure
+ * geometry output.
  */
 function applyWholeOffset(cfg: TrackConfig, shape: ShapeSpec): ShapeSpec {
 	const dy = cfg.wholeModelYOffset ?? 0;
@@ -427,13 +434,15 @@ function applyWholeOffset(cfg: TrackConfig, shape: ShapeSpec): ShapeSpec {
 }
 
 /**
- * 生成全部 9 种轨道形状 —— 只生成 blockstates 需要引用的模型，多余的由旋转表达：
- *  - 不生成 z_ortho：shape=zo 由 x_ortho 旋转 90° 表达
- *  - 不生成 ascending_north/east/west：方向由 ascending_south 经 blockstates 的 y 旋转表达
- *  - 不生成 teleport_x：传送门 4 方向都由 teleport（Z 向）经 y 旋转表达
- *  - 不生成 cross_d1_zo / cross_d2_zo：cross 的 xo/zo 方向都由 cross_d1_xo / cross_d2_xo
- *    （都是「斜轨 + Z 直轨」）经 90° 旋转表达（见 src/logic/export.ts 的 BLOCKSTATE_SHAPES）
- * 弯道渲染基础分组 tie / segment_left / segment_right 由 buildBaseParts 单独创建。
+ * Generates all 9 track shapes — only the models the blockstates actually reference; the rest are
+ * expressed via rotation:
+ *  - no z_ortho: shape=zo is expressed by rotating x_ortho 90°
+ *  - no ascending_north/east/west: directions come from ascending_south via blockstate y rotations
+ *  - no teleport_x: all four portal directions come from teleport (Z) via y rotations
+ *  - no cross_d1_zo / cross_d2_zo: cross xo/zo directions come from cross_d1_xo / cross_d2_xo
+ *    (both "diagonal + Z straight") via 90° rotations (see src/logic/export.ts BLOCKSTATE_SHAPES)
+ * The curve-rendering base groups tie / segment_left / segment_right are created separately by
+ * buildBaseParts.
  */
 export function allShapes(cfg: TrackConfig, opts: GeneratorOptions = {}): ShapeSpec[] {
 	const defs: ShapeDef[] = [

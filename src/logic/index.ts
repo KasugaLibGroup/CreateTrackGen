@@ -1,5 +1,5 @@
 /**
- * 纯逻辑层统一出口 —— 供 Node 单测打包（build.mjs 的 logic 次产物）。
+ * Unified export of the pure logic layer — for the Node test bundle (build.mjs logic sub-product).
  */
 export * from './types';
 export * from './gauge';

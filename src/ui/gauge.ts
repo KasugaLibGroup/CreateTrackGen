@@ -1,27 +1,28 @@
 /**
- * 轨距换算工具 —— 单个对话框内同时显示 英寸 / 毫米 / 像素(1/16 方块) / 输出值。
+ * Track gauge converter — a single dialog showing inches / millimeters / pixels (1/16 block) /
+ * output value at once.
  *
- * 用户在任意一个输入框里输入（英寸 / 毫米 / 像素），其余两个输入框与
- * 「输出值」（Create 弯道比例常数，只读）一起联动更新：
- *  - px 是生成基准：mm = px×1000/16，in = mm/25.4；
- *  - 输出比例常数由像素轨距经二次拟合曲线计算（scaleForPx）。
- * 输出值不可由用户直接修改，只随轨距变化。
+ * Entering a value in any input (inch / mm / px) updates the other two inputs and the "output value"
+ * (Create curve scale constant, read-only) together:
+ *  - px is the generation basis: mm = px×1000/16, in = mm/25.4;
+ *  - the output scale is computed from the pixel gauge via the quadratic fit (scaleForPx).
+ * The output value cannot be edited by the user; it only follows the gauge.
  */
 
 import type { DialogOptions } from 'blockbench-types/generated/interface/dialog';
 import { t } from '../i18n';
 import { DEFAULT_FIT, DEFAULT_GAUGE_MM, formatFit, inchToPx, mmToPx, pxToInch, pxToMM, scaleForPx } from '../logic/gauge';
 
-/** 换算工具的当前状态 */
+/** The converter tool's current state */
 interface GaugeState {
 	inch: number;
 	mm: number;
 	px: number;
-	/** Create 弯道比例常数（只读输出） */
+	/** Create curve scale constant (read-only output) */
 	scale: number;
 }
 
-/** 冒烟测试驱动钩子（真实 Blockbench 不依赖它） */
+/** Smoke-test driver hook (not used by real Blockbench) */
 export interface GaugeDriver {
 	setInch(v: number): void;
 	setMM(v: number): void;
@@ -29,12 +30,12 @@ export interface GaugeDriver {
 	getState(): GaugeState;
 }
 
-/** 显示用舍入：最多保留 digits 位小数并去掉多余的 0（62.990000 → 62.99） */
+/** Display rounding: at most digits decimals with trailing zeros stripped (62.990000 → 62.99) */
 function roundDisplay(n: number, digits = 4): number {
 	return Number(n.toFixed(digits));
 }
 
-/** 由像素轨距同步全部字段（px 为生成基准） */
+/** Syncs all fields from the pixel gauge (px is the generation basis) */
 function syncFromPx(state: GaugeState, px: number): void {
 	state.px = px;
 	state.mm = pxToMM(px);
@@ -42,7 +43,7 @@ function syncFromPx(state: GaugeState, px: number): void {
 	state.scale = scaleForPx(px);
 }
 
-// ── 对话框样式 ──────────────────────────────────────────────
+// ── Dialog styles ───────────────────────────────────────────────────────
 const GAUGE_STYLE_ID = 'create-track-gen-gauge-dialog-styles';
 const GAUGE_STYLE = `
 #create-track-gen-gauge-dialog .ctg-gauge-field { margin: 8px 0 12px; }
@@ -78,7 +79,7 @@ const GAUGE_STYLE = `
 }
 `;
 
-/** 注入对话框样式（有 document 时） */
+/** Injects the dialog styles (when a document exists) */
 function injectGaugeStyles(): void {
 	if (typeof document === 'undefined') return;
 	if (document.getElementById(GAUGE_STYLE_ID)) return;
@@ -88,13 +89,12 @@ function injectGaugeStyles(): void {
 	document.head.appendChild(style);
 }
 
-/** 卸载时清理对话框样式 */
 export function disposeGaugeStyles(): void {
 	if (typeof document === 'undefined') return;
 	document.getElementById(GAUGE_STYLE_ID)?.remove();
 }
 
-/** 创建带类名与文本的 DOM 元素 */
+/** Creates a DOM element with a class name and text */
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
 	const node = document.createElement(tag);
 	if (className) node.className = className;
@@ -102,15 +102,15 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 	return node;
 }
 
-/** 打开轨距换算对话框（英寸/毫米/像素/输出值联动） */
+/** Opens the gauge converter dialog (inch/mm/px/output linked) */
 export function runGaugeConverter(): void {
-	// 默认 Create 标称轨距
+	// Default to Create's nominal gauge
 	const state: GaugeState = { inch: 0, mm: 0, px: 0, scale: 0 };
 	syncFromPx(state, mmToPx(DEFAULT_GAUGE_MM));
 
 	let dialogNode: HTMLElement | null = null;
 
-	/** 把 state 同步回 DOM（edited 字段跳过，避免打断用户输入） */
+	/** Syncs state back to the DOM (skips the edited field, avoiding interrupting user input) */
 	const render = (edited?: string): void => {
 		if (!dialogNode) return;
 		const set = (which: string, v: number): void => {
@@ -124,7 +124,7 @@ export function runGaugeConverter(): void {
 		set('scale', state.scale);
 	};
 
-	/** 某个输入框的当前值 → 全量换算（px 为基准） */
+	/** Current value of an input → full conversion (px is the basis) */
 	const onEdit = (which: 'inch' | 'mm' | 'px'): void => {
 		if (!dialogNode) return;
 		const input = dialogNode.querySelector<HTMLInputElement>(`[data-gauge="${which}"]`);
@@ -155,7 +155,7 @@ export function runGaugeConverter(): void {
 		},
 	};
 
-	/** 构建对话框 DOM（无 document 时返回空字符串） */
+	/** Builds the dialog DOM (empty string when no document exists) */
 	const buildLines = (): HTMLElement | '' => {
 		if (typeof document === 'undefined') return '';
 		const wrap = el('div');
@@ -180,7 +180,7 @@ export function runGaugeConverter(): void {
 		wrap.append(el('div', 'ctg-gauge-hint', t('ctg.gauge.hint')));
 		wrap.append(el('div', 'ctg-gauge-note', `${t('ctg.gauge.formula', formatFit(DEFAULT_FIT))}\n${t('ctg.gauge.anchors')}`));
 
-		// 三个输入框的联动：编辑任一 → 其余字段 + 输出一起更新
+		// Link the three inputs: editing any one updates the rest and the output together
 		for (const which of ['inch', 'mm', 'px'] as const) {
 			const input = wrap.querySelector<HTMLInputElement>(`[data-gauge="${which}"]`);
 			if (input) input.addEventListener('input', () => onEdit(which));
@@ -199,7 +199,7 @@ export function runGaugeConverter(): void {
 		onBuild(node?: HTMLElement) {
 			if (!node) return;
 			dialogNode = node;
-			// 确保初始显示正确（默认 1600mm）
+			// Ensure the initial display is correct (default 1600mm)
 			render();
 		},
 		onConfirm() {
@@ -207,7 +207,7 @@ export function runGaugeConverter(): void {
 		},
 	} as DialogOptions & { _driver?: GaugeDriver };
 
-	// 冒烟测试钩子：直接驱动换算（真实 Blockbench 不依赖它）
+	// Smoke-test hook: drives the conversion directly (real Blockbench doesn't depend on it)
 	config._driver = driver;
 
 	injectGaugeStyles();

@@ -1,60 +1,60 @@
 /**
- * 零件模型解析与归一化。
+ * Part model parsing & normalization.
  *
- * 把 .bbmodel 的 elements 或当前项目的选中元素统一解析成 PartModel，
- * 并做归一化：底面 y 平移到 0，模型的对称点平移到 (0,0)。
- * 纯函数，可在 Node 中单测（传入 JSON 结构的 elements）。
+ * Parses a .bbmodel's elements or the current project's selected elements into a PartModel and
+ * normalizes: the bottom face is translated to y = 0 and the model's symmetry point to (0,0).
+ * Pure functions, Node-testable (pass JSON-structured elements).
  *
- * 对称点的确定依据模型格式（用户规定）：
- *  - Java Block/Item（java_block / java_item）：画布 0..16，原点在角上，对称点 (8,8)
- *  - 其他格式（generic/free 等）：原点即画布中心，对称点 (0,0)
- * 这样 Java 模式下零件可以在 0..16 画布内做大，而不必受"关于零点对称"的尺寸限制。
+ * The symmetry point is decided by the model format (user-defined):
+ *  - Java Block/Item (java_block / java_item): canvas 0..16, origin at a corner, symmetry (8,8)
+ *  - other formats (generic/free etc.): origin is the canvas center, symmetry (0,0)
+ * This lets Java-mode parts grow within the 0..16 canvas without the "symmetric about zero" limit.
  */
 
 import type { CubeFaceDirection, CubeSpec, MeshFaceSpec, MeshSpec, PartModel, SourceTexture, Vec3 } from './types';
 
-/** element 的旋转：Blockbench .bbmodel 的数组形式 [rx, ry, rz] 或旧式对象形式 */
+/** An element's rotation: Blockbench .bbmodel array form [rx, ry, rz] or legacy object form */
 export type ElementRotation =
 	| [number, number, number]
 	| { angle?: number; axis?: 'x' | 'y' | 'z'; origin?: [number, number, number] };
 
-/** 体块元素（type='cube' 或缺省）：from/to + 六面 */
+/** A volume element (type='cube' or default): from/to + six faces */
 export interface RawCubeElement {
 	name?: string;
 	type?: 'cube';
 	from: [number, number, number];
 	to: [number, number, number];
 	rotation?: ElementRotation;
-	/** 数组形式旋转时，origin 是 rotation 的同级字段（不是旋转对象内部的字段） */
+	/** For array-form rotation, origin is a sibling field of rotation (not inside the rotation object) */
 	origin?: [number, number, number];
 	faces?: Partial<Record<CubeFaceDirection, { uv?: [number, number, number, number]; rotation?: number; texture?: string | number }>>;
 }
 
-/** 网格元素（type='mesh'）：顶点表 + 面表。面的 texture 是纹理数组下标（同 cube） */
+/** A mesh element (type='mesh'): vertex table + face table. Face texture is the texture-array index (as with cubes) */
 export interface RawMeshElement {
 	name?: string;
 	type: 'mesh';
 	vertices?: Record<string, [number, number, number]>;
-	/** mesh 面：uv 是顶点 UV 列表（数组或对象均可，透传不解析） */
+	/** Mesh face: uv is a per-vertex UV list (array or object, passed through unparsed) */
 	faces?: Record<string, { vertices?: string[]; uv?: number[] | Record<string, any>; rotation?: number; texture?: string | number }>;
 	origin?: [number, number, number];
 	rotation?: [number, number, number];
 }
 
-/** .bbmodel 文件中最小的 element 结构（cube 或 mesh） */
+/** The minimal element structure in a .bbmodel file (cube or mesh) */
 export type RawElement = RawCubeElement | RawMeshElement;
 
-/** 判断 element 是否为 mesh 组 */
+/** Whether the element is a mesh group */
 export function isMeshElement(el: RawElement): el is RawMeshElement {
 	return (el as RawMeshElement).type === 'mesh';
 }
 
-/** .bbmodel 的 textures 数组元素 */
+/** An entry of the .bbmodel textures array */
 export interface RawTexture {
 	name?: string;
-	/** 纹理 id（面里用 texture 字段引用它） */
+	/** Texture id (referenced from faces via the `texture` field) */
 	id?: string | number;
-	/** base64 data URL 或桌面文件路径 */
+	/** Base64 data URL or desktop file path */
 	source?: string;
 	uv_width?: number;
 	uv_height?: number;
@@ -62,15 +62,15 @@ export interface RawTexture {
 
 export interface RawBbModel {
 	meta?: { model_format?: string; texture_size?: [number, number] };
-	/** Blockbench 5 的模型分辨率（纹理尺寸），加载时写入 Project.texture_width/height */
+	/** Blockbench 5 model resolution (texture size), written to Project.texture_width/height on load */
 	resolution?: { width?: number; height?: number };
 	elements?: RawElement[];
 	textures?: RawTexture[];
 }
 
 /**
- * 根据模型格式返回对称点（xz 平面，y 记 0）。
- * Java Block/Item → (8,8)；其他 → (0,0)。
+ * Returns the symmetry point (xz plane, y=0) for a model format.
+ * Java Block/Item → (8,8); other → (0,0).
  */
 export function symmetryPointForFormat(format: string | undefined): Vec3 {
 	if (format === 'java_block' || format === 'java_item') {
@@ -80,21 +80,23 @@ export function symmetryPointForFormat(format: string | undefined): Vec3 {
 }
 
 /**
- * 生成到某格式工作区时，把「居中于原点」的几何平移到画布对称点所需的偏移，
- * 是导入归一化（symmetryPointForFormat）的逆操作：
- *  - Java Block/Item → (8, 8)：模型在 0..16 画布内以 (8,8) 为对称轴，保证导出对称正确
- *  - 其他格式 → (0, 0)：原点即画布中心，无需平移
+ * The translation needed to move origin-centered geometry to the canvas symmetry point when building
+ * into a workspace of a given format — the inverse of the import normalization
+ * (symmetryPointForFormat):
+ *  - Java Block/Item → (8, 8): centers the model in the 0..16 canvas for correct export symmetry
+ *  - other formats → (0, 0): origin is already the canvas center, no translation
  */
 export function outputOffsetForFormat(format: string | undefined): Vec3 {
 	return symmetryPointForFormat(format);
 }
 
 /**
- * 把单个 element 转成 CubeSpec。
- * .bbmodel 里的 rotation 有两种形式，都要支持：
- *  - 数组形式 [rx, ry, rz]（Blockbench 标准导出格式），origin 为 rotation 的同级字段；
- *  - 对象形式 { angle, axis, origin }（旧式 / Java 模型 JSON 格式）。
- * 此前只解析对象形式，导致带数组旋转的零件（如 [0,-90,0] 的钢轨）导入时方向被丢弃。
+ * Converts a single element to a CubeSpec.
+ * .bbmodel rotation has two forms, both supported:
+ *  - array form [rx, ry, rz] (Blockbench's standard export format), origin as a sibling field of rotation;
+ *  - object form { angle, axis, origin } (legacy / Java model JSON format).
+ * Previously only the object form was parsed, so parts with array rotations (e.g. rails with
+ * [0,-90,0]) lost their orientation on import.
  */
 export function elementToCubeSpec(el: RawElement): CubeSpec {
 	const cube = el as RawCubeElement;
@@ -128,7 +130,7 @@ export function elementToCubeSpec(el: RawElement): CubeSpec {
 			faces[dir as CubeFaceDirection] = {
 				uv: f.uv ? [...f.uv] : undefined,
 				rotation: f.rotation,
-				// 面引用的源纹理 id 统一为字符串 key，供 assembly 层映射到导入的 Texture
+				// The face's source texture id is normalized to a string key for the assembly layer to map to the imported Texture
 				texture: f.texture !== undefined && f.texture !== null ? String(f.texture) : undefined,
 			};
 		}
@@ -137,18 +139,16 @@ export function elementToCubeSpec(el: RawElement): CubeSpec {
 	return spec;
 }
 
-/** 解析 .bbmodel JSON 的 elements → CubeSpec[]（只保留 cube 元素，mesh 跳过） */
+/** Parses .bbmodel elements → CubeSpec[] (cube elements only; meshes skipped) */
 export function elementsToCubeSpecs(elements: RawElement[]): CubeSpec[] {
 	return elements.filter((el) => !isMeshElement(el)).map((el) => elementToCubeSpec(el));
 }
 
 /**
- * 从 elements 提取 mesh 组（type='mesh'），转成 MeshSpec[]。
- * 面的 texture 引用（数组下标 / uuid）统一为字符串 key，与 cube 面约定一致，
- * 供 scopeTextureKeys 与 assembly 层映射到导入的 Texture。
+ * Per-axis vector rotation (degrees), applied in X→Y→Z order (matching Minecraft/Blockbench
+ * Cube.rotation). Identical to transform.ts's rotateVec; inlined here to avoid a parts↔transform
+ * circular dependency.
  */
-/** 绕 X/Y/Z 轴的向量旋转（角度制），顺序 X→Y→Z（与 Minecraft/Blockbench Cube.rotation 一致）。
- * 与 transform.ts 的 rotateVec 相同；为避免 parts↔transform 循环依赖，此处内联。 */
 function rotatePointX(v: Vec3, deg: number): Vec3 {
 	const a = (deg * Math.PI) / 180;
 	const c = Math.cos(a);
@@ -172,12 +172,13 @@ function rotatePoint(v: Vec3, rot: Vec3): Vec3 {
 }
 
 /**
- * 把 mesh 的 origin（世界锚点）与 rotation 烘焙进顶点，origin/rotation 置空。
+ * Bakes a mesh's origin (world anchor) and rotation into its vertices, clearing origin/rotation.
  *
- * Blockbench 渲染 mesh 时 `position.set(origin)`，即世界坐标 = origin + R(rotation)·vertices，
- * 顶点的 origin 是局部偏移。若不烘焙，后续 normalize / translateMesh 同时平移 origin 和 vertices
- * 会对含非零 origin 的 mesh（如 java 模型的 origin (8,8,8)）造成**双重位移**。
- * 烘焙后 origin 置空、vertices 成为世界坐标，mesh 与 cube（from/to 即世界坐标）行为一致。
+ * Blockbench renders a mesh as `position.set(origin)`, i.e. world = origin + R(rotation)·vertices,
+ * so the vertices' origin is a local offset. Without baking, a later normalize / translateMesh that
+ * shifts both origin and vertices would **double-shift** meshes with a non-zero origin (e.g. a Java
+ * model's origin (8,8,8)). After baking, origin is cleared and vertices become world coordinates,
+ * matching cube behavior (from/to are world coordinates).
  */
 function bakeMeshTransform(mesh: MeshSpec): MeshSpec {
 	const ox = mesh.origin?.[0] ?? 0;
@@ -189,13 +190,18 @@ function bakeMeshTransform(mesh: MeshSpec): MeshSpec {
 	if (!hasOrigin && !hasRot) return mesh;
 	const vertices: Record<string, Vec3> = {};
 	for (const [k, v] of Object.entries(mesh.vertices)) {
-		// 世界坐标 = origin + R(rotation)·vertices：先转 rotation，再加 origin
+		// world = origin + R(rotation)·vertices: rotate first, then add origin
 		const r = hasRot ? rotatePoint([v[0], v[1], v[2]], rot!) : ([v[0], v[1], v[2]] as Vec3);
 		vertices[k] = [r[0] + ox, r[1] + oy, r[2] + oz] as Vec3;
 	}
 	return { ...mesh, vertices, origin: undefined, rotation: undefined };
 }
 
+/**
+ * Extracts mesh groups (type='mesh') from elements as MeshSpec[].
+ * Face texture references (array index / uuid) are normalized to string keys, consistent with the
+ * cube-face convention, so scopeTextureKeys and the assembly layer can map them to imported Textures.
+ */
 export function extractMeshes(elements: RawElement[]): MeshSpec[] {
 	const out: MeshSpec[] = [];
 	for (const el of elements) {
@@ -205,7 +211,7 @@ export function extractMeshes(elements: RawElement[]): MeshSpec[] {
 			if (!f) continue;
 			faces[id] = {
 				vertices: f.vertices ? [...f.vertices] : [],
-				// uv 透传（数组或对象均可），不在这里展开，创建 Mesh 时原样交还 Blockbench
+				// uv is passed through (array or object); not expanded here, handed back to Blockbench unchanged on Mesh creation
 				uv: f.uv !== undefined ? (f.uv as any) : undefined,
 				rotation: f.rotation,
 				texture: f.texture !== undefined && f.texture !== null ? String(f.texture) : undefined,
@@ -224,7 +230,6 @@ export function extractMeshes(elements: RawElement[]): MeshSpec[] {
 	return out;
 }
 
-/** 计算 CubeSpec[] 的包围盒（考虑 from/to，不含 rotation） */
 export function computeBBox(cubes: CubeSpec[]): { min: Vec3; max: Vec3 } {
 	const min: Vec3 = [Infinity, Infinity, Infinity];
 	const max: Vec3 = [-Infinity, -Infinity, -Infinity];
@@ -237,7 +242,6 @@ export function computeBBox(cubes: CubeSpec[]): { min: Vec3; max: Vec3 } {
 	return { min, max };
 }
 
-/** 计算 MeshSpec[] 的包围盒（遍历全部顶点；顶点已烘焙为世界坐标，origin 已置空） */
 export function computeMeshBBox(meshes: MeshSpec[]): { min: Vec3; max: Vec3 } {
 	const min: Vec3 = [Infinity, Infinity, Infinity];
 	const max: Vec3 = [-Infinity, -Infinity, -Infinity];
@@ -252,7 +256,6 @@ export function computeMeshBBox(meshes: MeshSpec[]): { min: Vec3; max: Vec3 } {
 	return { min, max };
 }
 
-/** 零件（cube + mesh）的合并包围盒 */
 export function partBBox(cubes: CubeSpec[], meshes: MeshSpec[] = []): { min: Vec3; max: Vec3 } {
 	const cb = cubes.length ? computeBBox(cubes) : null;
 	const mb = meshes.length ? computeMeshBBox(meshes) : null;
@@ -265,7 +268,7 @@ export function partBBox(cubes: CubeSpec[], meshes: MeshSpec[] = []): { min: Vec
 	return cb ?? mb ?? { min: [0, 0, 0], max: [0, 0, 0] };
 }
 
-/** 平移 mesh 的所有顶点与 origin */
+/** Shifts all mesh vertices and the origin */
 function shiftMesh(mesh: MeshSpec, dx: number, dy: number, dz: number): MeshSpec {
 	return {
 		...mesh,
@@ -277,12 +280,12 @@ function shiftMesh(mesh: MeshSpec, dx: number, dy: number, dz: number): MeshSpec
 }
 
 /**
- * 把 CubeSpec[]（+ 可选 mesh）归一化为 PartModel。
- * - 底面 y 平移到 0：所有 y 减 bbox.min.y
- * - 对称点平移到 (0,0)：所有 x 减 symmetry[0]、z 减 symmetry[2]
- *   （symmetry 未提供时，回退为按包围盒横向中心自动居中，保持向后兼容）
- * - mesh 顶点与 origin 用同一偏移平移（保证 cube 与 mesh 相对位置不变）
- * 返回新的 CubeSpec（不污染入参）。
+ * Normalizes CubeSpec[] (+ optional meshes) into a PartModel.
+ * - bottom face to y = 0: all y minus bbox.min.y
+ * - symmetry point to (0,0): all x minus symmetry[0], z minus symmetry[2]
+ *   (falls back to automatic horizontal centering when symmetry is omitted, for backward compat)
+ * - mesh vertices and origin shifted by the same offset (keeps cube↔mesh relative positions)
+ * Returns new CubeSpecs (input is not mutated).
  */
 export function normalize(cubes: CubeSpec[], symmetry?: Vec3, meshes: MeshSpec[] = []): PartModel {
 	const bbox = partBBox(cubes, meshes);
@@ -311,15 +314,15 @@ export function normalize(cubes: CubeSpec[], symmetry?: Vec3, meshes: MeshSpec[]
 }
 
 /**
- * 从 .bbmodel 的 textures 数组提取源纹理与纹理分辨率。
+ * Extracts source textures and the texture resolution from a .bbmodel textures array.
  *
- * 关键：.bbmodel 里 element 的面用 `texture` 字段引用的是**纹理数组的下标**，
- * 不是纹理的 id（Blockbench 加载器 `Texture.all[face.texture]`）。因此这里把
- * 源纹理的 key 设为数组下标（String(index)），与 `elementToCubeSpec` 归一化出的
- * 面纹理引用对齐，assembly 层才能把面纹理解析到导入的 Texture。
+ * Key point: in .bbmodel, faces reference textures via the `texture` field as an **array index**, not
+ * the texture id (Blockbench loader: `Texture.all[face.texture]`). So source texture keys are set to
+ * the array index (String(index)), aligning with the face-texture references produced by
+ * elementToCubeSpec, so the assembly layer can resolve face textures to imported Textures.
  *
- * 分辨率优先级：resolution → meta.texture_size → 全部纹理共享的 uv 尺寸 → undefined。
- * 无纹理（或 source 缺失）的模型返回空数组、尺寸 undefined。
+ * Resolution priority: resolution → meta.texture_size → the uv size shared by all textures → undefined.
+ * Models with no textures (or missing sources) return an empty array and undefined size.
  */
 export function parseBbTextures(json: RawBbModel): { textureSize?: [number, number]; textures: SourceTexture[] } {
 	const raws = json.textures ?? [];
@@ -350,8 +353,8 @@ export function parseBbTextures(json: RawBbModel): { textureSize?: [number, numb
 }
 
 /**
- * 检查多个零件（左轨 / 右轨 / 枕木）的纹理分辨率是否一致。
- * 全部零件都有定义且相同的 [w, h] 时返回该尺寸，否则返回 null（应拒绝生成）。
+ * Checks whether all parts (left / right / tie) share the same texture resolution.
+ * Returns that size when all are defined and equal, otherwise null (generation should be rejected).
  */
 export function consistentTextureSize(parts: { textureSize?: [number, number] }[]): [number, number] | null {
 	const size = parts[0]?.textureSize;
@@ -363,13 +366,15 @@ export function consistentTextureSize(parts: { textureSize?: [number, number] }[
 }
 
 /**
- * 给零件的源纹理 key 加前缀，使三个零件（左轨 / 右轨 / 枕木）的纹理 key 全局唯一。
+ * Prefixes a part's source-texture keys so the three parts (left / right / tie) have globally unique
+ * keys.
  *
- * 背景：.bbmodel 面的 texture 引用是纹理数组下标（0、1…），每个零件都从 0 开始，
- * 若直接用下标当 key，三份零件会在「源 key → 导入 Texture」映射里互相覆盖，
- * 导致所有体块都贴到最后导入的那张纹理。加前缀（如 L/0、R/0、T/0）后各自唯一。
+ * Background: .bbmodel face texture references are array indices (0, 1…), and every part starts at 0.
+ * Using the raw index as the key would make the three parts overwrite each other in the "source key →
+ * imported Texture" map, so every volume would get the last-imported texture. Prefixing (L/0, R/0,
+ * T/0) keeps them unique.
  *
- * cube 面的 texture 与 mesh 面的 texture 一并同步改写。返回同一个 PartModel（就地改写）。
+ * Cube-face and mesh-face textures are rewritten together. Returns the same PartModel (mutated in place).
  */
 export function scopeTextureKeys(part: PartModel, prefix: string): PartModel {
 	const texKeys = new Map<string, string>();
@@ -412,16 +417,16 @@ export function scopeTextureKeys(part: PartModel, prefix: string): PartModel {
 }
 
 /**
- * 根据输入零件是否含 mesh 组决定新工作区的模型格式：
- *  - 任一零件含 mesh → 'generic'（自由模型，只有它能容纳 mesh 组）
- *  - 全为 cube → Java 方块/物品模型（当前项目为 java_item 则用 java_item，否则 java_block）
+ * Decides the new workspace's model format from whether any input part contains mesh groups:
+ *  - any part has mesh → 'generic' (free model, the only one that can hold mesh groups)
+ *  - all cubes → Java block/item model (java_item if the current project is java_item, else java_block)
  */
 export function targetFormatForParts(parts: { hasMesh?: boolean }[], currentFormat?: string): string {
 	if (parts.some((p) => p.hasMesh)) return 'generic';
 	return currentFormat === 'java_item' ? 'java_item' : 'java_block';
 }
 
-/** 解析 .bbmodel JSON → PartModel（自动归一化，对称点由 meta.model_format 决定），附带纹理信息 */
+/** Parses .bbmodel JSON → PartModel (auto-normalized; symmetry point from meta.model_format), with texture info attached */
 export function parseBbModel(json: RawBbModel, format?: string): PartModel {
 	const fmt = format ?? json.meta?.model_format;
 	const elements = json.elements ?? [];
@@ -433,9 +438,10 @@ export function parseBbModel(json: RawBbModel, format?: string): PartModel {
 }
 
 /**
- * 从元素列表提取零件（.bbmodel 的 elements 或某个标签页选中的元素）。
- * format 为来源模型格式（如 Project.format.id / 标签页格式），决定对称点；缺省按其他格式 (0,0)。
- * 传入的 elements 已是最小 element 结构（由 UI 层从 OutlinerElement 转换而来）。
+ * Extracts a part from an element list (a .bbmodel's elements or a tab's selected elements).
+ * format is the source model format (e.g. Project.format.id / tab format) and decides the symmetry
+ * point; defaults to (0,0) for other formats. The passed elements must already be the minimal element
+ * structure (converted by the UI layer from OutlinerElements).
  */
 export function extractFromElements(elements: RawElement[], format?: string): PartModel {
 	return normalize(elementsToCubeSpecs(elements), symmetryPointForFormat(format), extractMeshes(elements));

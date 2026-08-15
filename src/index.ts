@@ -1,13 +1,15 @@
 /**
- * 机械动力轨道生成器 —— 插件入口。
+ * Create track generator — plugin entry point.
  *
- * 插件 ID 必须与打包产物的文件名一致：create_track_gen.js
- * 加载方式：把项目根目录下的 create_track_gen.js 拖进 Blockbench，或用 Ctrl/Cmd+J 重载。
+ * The plugin id must match the bundled artifact's file name: create_track_gen.js
+ * Loading: drag the project root's create_track_gen.js into Blockbench, or reload with Ctrl/Cmd+J.
  *
- * 功能：
- *  - 「工具」菜单 →「机械动力轨道生成」→ 单页配置对话框收集 左轨/右轨/枕木 零件 + 轨距 + 高度，
- *    右轨可从左轨镜像生成，完成后生成符合 Create 轨道规范的 16 种形状。
- *  - 轨距换算：把玩家输入的轨距换算成 Create 弯道比例常数（二次拟合曲线）。
+ * Features:
+ *  - "Tools" → "Generate Create Tracks" → single-page config dialog collecting the left rail / right
+ *    rail / tie parts + gauge + height; the right rail can be mirrored from the left; on completion it
+ *    generates the 16 Create-spec track shapes.
+ *  - Track gauge converter: converts a player-entered gauge into Create's curve scale constant
+ *    (quadratic fit).
  */
 import { registerPlugin } from './plugin_api';
 import { runGenerateWizard, injectDialogStyles, disposeDialogStyles } from './ui/dialog';
@@ -17,18 +19,18 @@ import { runTrackExport, injectExportStyles, disposeExportStyles } from './build
 import { t, loadTranslationsFromDisk } from './i18n';
 import { DEFAULT_FIT, formatFit, gaugeMMToScale, mmToInch, pxToMM, scaleForPx } from './logic/gauge';
 
-/** onload 中创建的 Action，onunload 时必须删除 */
+/** Actions created in onload must be deleted in onunload */
 const knownActions: Action[] = [];
 
-/** 主生成 Action：收集输入并生成全部形状 */
+/** The main generate Action: collects input and generates all shapes */
 let generateAction: Action | undefined;
 
-/** MenuBar.menus 类型较宽松，做一次收窄断言 */
+/** MenuBar.menus is loosely typed; narrow it with one assertion */
 const toolsMenu = (MenuBar.menus as Record<string, Menu>).tools;
 
 registerPlugin('create_track_gen', {
 	title: t('ctg.plugin.title'),
-	author: 'Kuayue Team',
+	author: 'KasugaLib Group',
 	description: t('ctg.plugin.description'),
 	about: t('ctg.plugin.about'),
 	icon: 'train',
@@ -36,11 +38,12 @@ registerPlugin('create_track_gen', {
 	variant: 'both',
 	tags: ['Minecraft: Java Edition'],
 	onload() {
-		// 优先读取插件目录下 lang/*.json（改翻译无需重新构建）；缺失时用内置默认
+		// Prefer reading lang/*.json from the plugin directory (translation edits need no rebuild);
+		// falls back to the built-in defaults when missing
 		loadTranslationsFromDisk((globalThis as any).Plugins?.registered?.['create_track_gen']?.path);
 		injectDialogStyles();
 		injectExportStyles();
-		// 主生成
+		// Main generate
 		generateAction = new Action('create_track_gen.generate', {
 			name: t('ctg.action.generate.name'),
 			description: t('ctg.action.generate.desc'),
@@ -54,8 +57,8 @@ registerPlugin('create_track_gen', {
 				try {
 					Undo.initEdit({ outliner: true });
 					const group = buildAllShapes(result.shapes, result.textureByKey);
-					// 弯道渲染基础分组：tie / segment_left / segment_right（Create 曲线渲染用），
-					// 挂到轨道大组 group 下，与各方向轨道形状并列
+					// Curve-rendering base groups: tie / segment_left / segment_right (Create's curve
+					// rendering), attached under the track parent group alongside the directional shapes
 					buildBaseParts(group, result.config.parts, result.config, result.textureByKey);
 					Undo.finishEdit(t('ctg.undo.generate'), { outliner: true });
 					Canvas.updateView({ selection: true });
@@ -66,7 +69,7 @@ registerPlugin('create_track_gen', {
 						icon: 'train',
 						color: '#7cb342',
 					});
-					// 展示轨距换算结果
+					// Show the gauge conversion result
 					const mm = pxToMM(result.config.gaugePx);
 					const yOff = result.config.wholeModelYOffset ?? 0;
 					Blockbench.showMessageBox({
@@ -99,7 +102,7 @@ registerPlugin('create_track_gen', {
 		toolsMenu?.addAction(generateAction);
 		knownActions.push(generateAction);
 
-		// 轨距换算独立入口：英寸/毫米/像素 + 只读输出值联动对话框
+		// Standalone gauge converter: inch/mm/px inputs with a read-only linked output dialog
 		const gaugeAction = new Action('create_track_gen.gauge', {
 			name: t('ctg.action.gauge.name'),
 			description: t('ctg.action.gauge.desc'),
@@ -111,7 +114,8 @@ registerPlugin('create_track_gen', {
 		toolsMenu?.addAction(gaugeAction);
 		knownActions.push(gaugeAction);
 
-		// 导出轨道模型：把当前工作区「机械动力轨道」大组按 Create 命名规范写出 + blockstates
+		// Export track models: writes the current workspace's track parent group per Create naming +
+		// blockstates
 		const exportAction = new Action('create_track_gen.export', {
 			name: t('ctg.action.export.name'),
 			description: t('ctg.action.export.desc'),

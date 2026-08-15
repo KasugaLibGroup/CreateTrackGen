@@ -1,13 +1,13 @@
 /**
- * 几何变换 —— 纯函数，操作 CubeSpec[]。
- * 与 Blockbench 解耦：平移直接改 from/to/origin；旋转返回带 rotation 字段的 CubeSpec，
- * 由 assembly 层用 Cube.rotation 表达。
+ * Geometric transforms — pure functions operating on CubeSpec[].
+ * Decoupled from Blockbench: translation edits from/to/origin directly; rotation returns CubeSpecs
+ * carrying a rotation field, which the assembly layer expresses as Cube.rotation.
  */
 
 import { computeBBox, partBBox } from './parts';
 import type { CubeFaceDirection, CubeSpec, FaceSpec, MeshSpec, PartModel, Vec3 } from './types';
 
-/** 深拷贝 CubeSpec 列表，避免污染原始零件 */
+/** Deep-copies a CubeSpec list, avoiding pollution of the original parts */
 export function cloneCubes(cubes: CubeSpec[]): CubeSpec[] {
 	return cubes.map((c) => ({
 		...c,
@@ -29,7 +29,6 @@ export function cloneCubes(cubes: CubeSpec[]): CubeSpec[] {
 	}));
 }
 
-/** 平移所有 Cube 指定偏移量 */
 export function translate(cubes: CubeSpec[], offset: Vec3): CubeSpec[] {
 	const [dx, dy, dz] = offset;
 	return cubes.map((c) => ({
@@ -41,9 +40,9 @@ export function translate(cubes: CubeSpec[], offset: Vec3): CubeSpec[] {
 }
 
 /**
- * 绕 Y 轴旋转（角度制）。生成的是"带旋转字段"的 Cube：
- * 直接把 rotation 的 Y 分量设为 angle（并保证 origin 存在），from/to 不变。
- * 这样 Blockbench 会用 Cube.rotation 表达旋转，而非重算旋转后坐标。
+ * Rotates about the Y axis (degrees), producing a "rotation-field cube": it sets the Y component of
+ * rotation to angleDeg (ensuring origin exists) and leaves from/to unchanged. Blockbench then
+ * expresses the rotation via Cube.rotation rather than recomputed coordinates.
  */
 export function rotateY(cubes: CubeSpec[], angleDeg: number, origin: Vec3): CubeSpec[] {
 	return cubes.map((c) => ({
@@ -54,8 +53,8 @@ export function rotateY(cubes: CubeSpec[], angleDeg: number, origin: Vec3): Cube
 }
 
 /**
- * 绕 X 轴旋转（角度制），用于上升轨道坡度。
- * 若既有 Y 旋转（yaw），叠加保留。
+ * Rotates about the X axis (degrees), used for the ascending-track slope.
+ * Preserves any existing Y rotation (yaw).
  */
 export function rotateX(cubes: CubeSpec[], angleDeg: number, origin: Vec3): CubeSpec[] {
 	return cubes.map((c) => ({
@@ -65,14 +64,13 @@ export function rotateX(cubes: CubeSpec[], angleDeg: number, origin: Vec3): Cube
 	}));
 }
 
-/** 抬升所有 Cube（y 方向平移，正值向上） */
 export function lift(cubes: CubeSpec[], dy: number): CubeSpec[] {
 	return translate(cubes, [0, dy, 0]);
 }
 
 /**
- * 绕 X/Y/Z 轴的向量旋转（角度制），与 Minecraft/Blockbench Cube.rotation 约定一致。
- * 其中 Y 旋转经 test_rail 的 [0,-90,0] 实测校验（-90 使横跨 X 的盒子转为沿 Z）。
+ * Per-axis vector rotation (degrees), matching the Minecraft/Blockbench Cube.rotation convention.
+ * The Y rotation was verified against test_rail's [0,-90,0] (-90 turns an X-spanning box along Z).
  */
 function rotX(v: Vec3, deg: number): Vec3 {
 	const a = (deg * Math.PI) / 180;
@@ -93,12 +91,12 @@ function rotZ(v: Vec3, deg: number): Vec3 {
 	return [v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]];
 }
 
-/** 按 [rx, ry, rz] 依次绕 X→Y→Z 旋转向量（Minecraft 的 Cube.rotation 顺序） */
+/** Rotates a vector by [rx, ry, rz] in X→Y→Z order (Minecraft's Cube.rotation order) */
 export function rotateVec(v: Vec3, rot: Vec3): Vec3 {
 	return rotZ(rotY(rotX(v, rot[0]), rot[1]), rot[2]);
 }
 
-/** 面方向对应的法向量 */
+/** Face direction → its normal vector */
 const FACE_NORMAL: Record<CubeFaceDirection, Vec3> = {
 	north: [0, 0, -1],
 	south: [0, 0, 1],
@@ -108,14 +106,14 @@ const FACE_NORMAL: Record<CubeFaceDirection, Vec3> = {
 	down: [0, -1, 0],
 };
 
-/** 法向量 → 面方向（90° 倍数旋转后法向量仍是 ±1 轴向量） */
+/** Normal vector → face direction (after 90°-multiple rotation the normal stays a ±1 axis vector) */
 const NORMAL_TO_FACE: Record<string, CubeFaceDirection> = Object.fromEntries(
 	(Object.keys(FACE_NORMAL) as CubeFaceDirection[]).map((k) => [FACE_NORMAL[k].join(','), k])
 );
 
 /**
- * 各面方向对应的局部 UV 轴（世界方向），与 Blockbench CubeFace.UVToLocal 的约定一致：
- * 侧面 v 都朝 -y，u 沿各面的横向；up/down 的 u 朝 +x、v 朝 ±z。
+ * Local UV axes per face direction (world directions), matching Blockbench's CubeFace.UVToLocal
+ * convention: side v faces −y, u runs along each face's lateral; up/down u faces +x, v faces ±z.
  */
 const FACE_UV_AXES: Record<CubeFaceDirection, { u: Vec3; v: Vec3; n: Vec3 }> = {
 	north: { u: [-1, 0, 0], v: [0, -1, 0], n: [0, 0, -1] },
@@ -130,20 +128,22 @@ function dot3(a: Vec3, b: Vec3): number {
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-/** 把（±1 轴）向量取整为整数值，消除浮点误差 */
+/** Rounds a (±1 axis) vector to integers, removing floating-point error */
 function roundAxis(v: Vec3): Vec3 {
 	return [Math.round(v[0]), Math.round(v[1]), Math.round(v[2])] as Vec3;
 }
 
 /**
- * 把「面的 UV 采样」按立方体旋转 rot 变换，得到新的面方向与（uv 盒, rotation）。
+ * Transforms a face's UV sampling under a cube rotation rot, yielding the new face direction and
+ * (uv box, rotation).
  *
- * 纹理是"粘"在体块上的：体块旋转后，同一块纹理区域仍贴在同一物理面上，只是该面
- * 的法向/局部 UV 轴变了。对 90° 倍数的轴旋转：
- *  - 纯旋转（det>0）：uv 盒不变，只把旋转角叠加到 face.rotation 上；
- *  - 反射（det<0，90° 轴旋转里可能出现，如绕 Z 时 side 面）：uv 盒的 v 反向
- *    （交换 v0/v1）以表达镜像——Minecraft 的 face.rotation 只有 0/90/180/270，不能表镜像。
- * 旋转轴由 Minecraft/Blockbench 的 Cube.rotation 顺序（X→Y→Z）计算。
+ * Textures are "glued" to the volume: after the volume rotates, the same texture region stays on the
+ * same physical face, only the face's normal / local UV axes change. For 90°-multiple axis rotations:
+ *  - pure rotation (det>0): uv box unchanged, only the rotation angle is added to face.rotation;
+ *  - reflection (det<0, can occur in 90° rotations, e.g. side faces when rotating about Z): the uv
+ *    box's v is reversed (swap v0/v1) to express the mirror — Minecraft's face.rotation only supports
+ *    0/90/180/270 and cannot express a mirror.
+ * The rotation order follows Minecraft/Blockbench's Cube.rotation (X→Y→Z).
  */
 export function transformFaceUV(
 	dir: CubeFaceDirection,
@@ -153,7 +153,7 @@ export function transformFaceUV(
 	const src = FACE_UV_AXES[dir];
 	const newDir = NORMAL_TO_FACE[roundAxis(rotateVec(src.n, rot)).join(',')] ?? dir;
 	const dst = FACE_UV_AXES[newDir];
-	// 旧 u/v 轴经旋转后，在新面局部 UV 基里的坐标
+	// The old u/v axes after rotation, in the new face's local UV basis
 	const Ru = roundAxis(rotateVec(src.u, rot));
 	const Rv = roundAxis(rotateVec(src.v, rot));
 	const a = dot3(Ru, dst.u);
@@ -161,18 +161,18 @@ export function transformFaceUV(
 	const c = dot3(Rv, dst.u);
 	const d = dot3(Rv, dst.v);
 	const det = a * d - b * c;
-	// 旧 u 轴在新面里的旋转角（90° 倍数），det 正负均适用
+	// The old u axis's rotation angle in the new face (90° multiples), valid for either det sign
 	const theta = Math.round(Math.atan2(b, a) / (Math.PI / 2)) * 90;
 	let newRot = (face.rotation ?? 0) + theta;
 	let uv = face.uv;
 	if (det < 0) {
-		// 反射：绕 u 轴镜像 → v 采样反向（交换 v0/v1）
+		// Reflection: mirror about the u axis → v sampling reversed (swap v0/v1)
 		if (uv) uv = [uv[0], uv[3], uv[2], uv[1]] as [number, number, number, number];
 	}
 	newRot = ((newRot % 360) + 360) % 360;
-	// 规范表示：旋转角为 90/270 时，换成等价的「uv 盒整体交换 + 180°」表示。
-	// box rot270 与 uv-swap rot90 是同一映射的两种编码（渲染不变式验证两者 err=0）。
-	// 选 uv-swap 表示，使烘焙后的顶/底面旋转角与未烘焙的枕木源一致（up=90 / down=270）。
+	// Canonical form: for rotation 90/270, use the equivalent "swap uv box + 180°" encoding instead.
+	// box-rot270 and uv-swap-rot90 are two encodings of the same mapping (render-invariant check: err=0).
+	// The uv-swap form is chosen so baked top/bottom rotations match unbaked tie sources (up=90/down=270).
 	if (newRot === 90 || newRot === 270) {
 		if (uv) uv = [uv[2], uv[3], uv[0], uv[1]] as [number, number, number, number];
 		newRot = (newRot + 180) % 360;
@@ -180,7 +180,7 @@ export function transformFaceUV(
 	return { dir: newDir, face: { ...face, uv, rotation: newRot } };
 }
 
-/** 面方向在「沿 X 轴镜像（YZ 平面反射）」下的映射：east↔west，其余不变 */
+/** Face direction mapping under an X-axis mirror (YZ-plane reflection): east↔west, others unchanged */
 const MIRROR_FACE: Record<CubeFaceDirection, CubeFaceDirection> = {
 	north: 'north',
 	south: 'south',
@@ -191,12 +191,13 @@ const MIRROR_FACE: Record<CubeFaceDirection, CubeFaceDirection> = {
 };
 
 /**
- * 把单个 Cube 的面在 YZ 平面反射下变换：
- *  - 面方向：east↔west（法向量随反射翻转，否则面法线朝内）；
- *  - UV：u 轴反向（uv 盒交换 u0/u1，v 不变）——反射是手性翻转（det=-1），
- *    face.rotation 只有 0/90/180/270 表达不了反射，Blockbench 用「翻转 uv 盒」表达镜像；
- *  - face.rotation 取反（-0=0、-90=270、-180=180、-270=90）。
- * 纹理引用（texture key）不变：镜像后的零件仍引用同一张源纹理，只是采样方向翻转。
+ * Transforms a cube's faces under a YZ-plane reflection:
+ *  - face direction: east↔west (the normal flips with the reflection, otherwise faces point inward);
+ *  - UV: u axis reversed (uv box swaps u0/u1, v unchanged) — reflection is a handedness flip (det=-1),
+ *    and face.rotation only supports 0/90/180/270, so Blockbench expresses the mirror by flipping the uv box;
+ *  - face.rotation negated (-0=0, -90=270, -180=180, -270=90).
+ * The texture reference (texture key) is unchanged: the mirrored part still references the same source
+ * texture, only the sampling direction is flipped.
  */
 function mirrorFaces(faces: NonNullable<CubeSpec['faces']>): NonNullable<CubeSpec['faces']> {
 	const out: NonNullable<CubeSpec['faces']> = {};
@@ -215,10 +216,11 @@ function mirrorFaces(faces: NonNullable<CubeSpec['faces']>): NonNullable<CubeSpe
 }
 
 /**
- * 把 mesh 沿 YZ 平面反射（x → 2·cx − x）：
- *  - 顶点与 origin 的 x 反射，y/z 不变
- *  - 旋转 ry/rz 取反（rx 不变），同 cube 约定
- *  - 面顶点顺序反转（反射改变绕序，反转保持法线朝外），UV/纹理不变
+ * Reflects a mesh across the YZ plane (x → 2·cx − x):
+ *  - vertex and origin x reflected, y/z unchanged
+ *  - rotation ry/rz negated (rx unchanged), matching the cube convention
+ *  - face vertex order reversed (reflection flips the winding; reversing keeps normals outward),
+ *    UV/texture unchanged
  */
 function mirrorMeshYz(mesh: MeshSpec, cx: number): MeshSpec {
 	return {
@@ -235,14 +237,16 @@ function mirrorMeshYz(mesh: MeshSpec, cx: number): MeshSpec {
 }
 
 /**
- * 把零件沿其横向中心（xMid）的 YZ 平面镜像，得到左右对称的零件。
- * 用于「右轨 = 左轨的镜像」（Create 的 segment_left / segment_right 互为沿轨道中心线的镜像）：
- *  - 几何：from/to/origin 的 x → 2·xMid − x（from/to 交换保证 from<to）
- *  - 旋转：ry 与 rz 取反（rx 不变），即 [rx, −ry, −rz]（YZ 平面反射对旋转的共轭）
- *  - 面：east↔west 交换 + u 轴反向 + rotation 取反（见 mirrorFaces）
- *  - mesh：顶点 x 反射 + 面顶点顺序反转（见 mirrorMeshYz）
- * 纹理（textures / textureSize）不变——镜像零件仍引用同一张源纹理。
- * 返回新 PartModel（不污染入参）。关于自身中心的镜像是一次对合（mirror(mirror(x)) === x）。
+ * Mirrors a part about the YZ plane through its lateral center (xMid), producing the left/right
+ * symmetric part. Used for "right rail = mirror of left rail" (Create's segment_left / segment_right
+ * are mirrors of each other about the track centerline):
+ *  - geometry: from/to/origin x → 2·xMid − x (from/to swapped to keep from<to)
+ *  - rotation: ry and rz negated (rx unchanged), i.e. [rx, −ry, −rz] (conjugation of rotation by the YZ reflection)
+ *  - faces: east↔west swap + u-axis reversed + rotation negated (see mirrorFaces)
+ *  - mesh: vertex x reflected + face vertex order reversed (see mirrorMeshYz)
+ * Textures (textures / textureSize) are unchanged — the mirrored part still references the same source
+ * texture. Returns a new PartModel (input not mutated). Mirroring about one's own center is an
+ * involution (mirror(mirror(x)) === x).
  */
 export function mirrorPartYz(part: PartModel): PartModel {
 	const cx = part.xMid;
@@ -273,8 +277,9 @@ export function mirrorPartYz(part: PartModel): PartModel {
 }
 
 /**
- * 旋转后把每个面的 UV 采样（uv 盒 + face.rotation）一并变换到新方向，
- * 而不仅是换方向——否则面贴图会旋转错（如顶/底面在绕 Y 旋转后需要 +90/270°）。
+ * After a rotation, transforms each face's UV sampling (uv box + face.rotation) to the new direction
+ * as well — not just the direction — otherwise the face texture would be rotated wrong (e.g. top/bottom
+ * faces need +90/270° after a Y rotation).
  */
 function remapFaces(faces: NonNullable<CubeSpec['faces']>, rot: Vec3): NonNullable<CubeSpec['faces']> {
 	const out: NonNullable<CubeSpec['faces']> = {};
@@ -286,26 +291,27 @@ function remapFaces(faces: NonNullable<CubeSpec['faces']>, rot: Vec3): NonNullab
 	return out;
 }
 
-/** 旋转各分量是否都是 90° 的倍数（保持轴对齐，才能烘焙进 from/to） */
+/** Whether every rotation component is a 90° multiple (stays axis-aligned, so it can bake into from/to) */
 function isAxisAlignedRot(rot: Vec3): boolean {
 	return rot.some((v) => v !== 0) && rot.every((v) => v % 90 === 0);
 }
 
 /**
- * 把零件中「90° 倍数、保持轴对齐」的旋转烘焙进 from/to，产出无 rotation 字段的普通盒子。
- * 这样派生形状（straightX / diag / ascending / teleport_x / cross_*）再叠加组旋转
- * （rotateY / rotateX）时不会覆盖零件自身方向——否则钢轨自带的 [0,-90,0] 会被组旋转
- * 覆盖，导致钢轨与枕木平行。
+ * Bakes the part's "90°-multiple, axis-aligned" rotations into from/to, producing plain boxes without
+ * a rotation field. Derived shapes (straightX / diag / ascending / teleport_x / cross_*) can then add
+ * their own group rotation (rotateY / rotateX) without overwriting the part's own orientation —
+ * otherwise a rail's built-in [0,-90,0] would be overwritten and the rails would end up parallel to
+ * the ties.
  *
- * 旋转围绕 cube 自身 origin 进行；非 90° 倍数旋转无法烘焙，保留 rotation 字段。
- * 返回重新计算过 bbox / xMid 的新 PartModel（不污染入参）。
+ * Rotation happens about each cube's own origin; non-90° rotations cannot be baked and keep their
+ * rotation field. Returns a new PartModel with recomputed bbox / xMid (input not mutated).
  */
 export function bakePartAxisAligned(part: PartModel): PartModel {
 	const cubes = part.cubes.map((c) => {
 		const rot = c.rotation;
 		if (!rot || !isAxisAlignedRot(rot)) return c;
 		const origin = c.origin ?? ([0, 0, 0] as Vec3);
-		// 旋转 8 个角点，取轴对齐包围盒
+		// Rotate the 8 corners and take the axis-aligned bounding box
 		const pts: Vec3[] = [];
 		for (const x of [c.from[0], c.to[0]])
 			for (const y of [c.from[1], c.to[1]])
@@ -333,13 +339,15 @@ export function bakePartAxisAligned(part: PartModel): PartModel {
 }
 
 /**
- * 把每个无 rotation 的 Cube 绕 Y 轴「烘焙」旋转 -90°（关于指定中心），直接换算 from/to，
- * 并把每个面的 UV 采样（uv 盒 + face.rotation）变换到新方向。产物是不带 rotation 字段的
- * 普通盒子，后续 rotateY/rotateX 叠加时不会互相覆盖（否则枕木自身旋转会被派生形状的
- * 组旋转覆盖，导致垂直性丢失）。
+ * "Bakes" a −90° Y rotation into every unrotated cube (about the given center) by recomputing from/to
+ * directly, and transforms each face's UV sampling (uv box + face.rotation) to the new direction. The
+ * result is plain boxes without a rotation field, so later rotateY/rotateX composition can't overwrite
+ * each other (otherwise a tie's own rotation would be overwritten by derived shapes' group rotation,
+ * losing perpendicularity).
  *
- * 带自身 rotation 的 cube 原样返回：其朝向由旋转表达，解析器已保留，不应被烘焙覆盖。
- * 方向映射（-90° 绕 Y）：north→east、south→west、east→south、west→north、up/down 不变。
+ * Cubes carrying their own rotation are returned unchanged: their orientation is expressed by the
+ * rotation and preserved by the parser; it must not be overwritten by the bake.
+ * Direction mapping (−90° about Y): north→east, south→west, east→south, west→north; up/down unchanged.
  */
 export function bakeRotateY90(cubes: CubeSpec[], center: Vec3): CubeSpec[] {
 	const [cx, , cz] = center;

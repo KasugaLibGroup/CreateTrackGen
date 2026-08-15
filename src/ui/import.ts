@@ -1,5 +1,5 @@
 /**
- * 零件获取 —— 从磁盘导入 .bbmodel 或从当前项目提取。
+ * Part acquisition — imports .bbmodel files from disk or extracts parts from the current project.
  */
 
 import { elementsToRaw } from '../build/assembly';
@@ -7,15 +7,15 @@ import { parseBbModel, extractFromElements, type RawElement } from '../logic/par
 import { t } from '../i18n';
 import type { PartModel, SourceTexture } from '../logic/types';
 
-/** 导入文件结果的轻量结构（与 Filesystem.FileResult 兼容） */
+/** A lightweight structure for an imported file's result (compatible with Filesystem.FileResult) */
 export interface ImportedFile {
 	name: string;
 	content: string | ArrayBuffer;
 }
 
 /**
- * 从磁盘打开文件选择对话框，导入 .bbmodel 文件内容。
- * 返回 Promise<ImportedFile[]>，用户取消则 resolve null。
+ * Opens the disk file picker to import .bbmodel file contents.
+ * Resolves to ImportedFile[], or null when the user cancels.
  */
 export function pickBbModels(): Promise<ImportedFile[] | null> {
 	return new Promise((resolve) => {
@@ -42,9 +42,9 @@ export function pickBbModels(): Promise<ImportedFile[] | null> {
 }
 
 /**
- * 解析单个 .bbmodel 文件内容为零件。
- * 对称点由文件内 meta.model_format 决定（java_block/java_item → (8,8)，其他 → (0,0)）。
- * 失败时抛错（由调用方捕获提示）。
+ * Parses a single .bbmodel file content into a part. The symmetry point is decided by the file's
+ * meta.model_format (java_block/java_item → (8,8), others → (0,0)). Throws on failure (the caller
+ * surfaces the message).
  */
 export function parseImportedBbModel(file: ImportedFile): PartModel {
 	const json = JSON.parse(String(file.content)) as Parameters<typeof parseBbModel>[0];
@@ -55,21 +55,21 @@ export function parseImportedBbModel(file: ImportedFile): PartModel {
 	return part;
 }
 
-/** 把文件内容规范化为 Uint8Array（兼容 ArrayBuffer 与 Uint8Array/DataView） */
+/** Normalizes a file content into a Uint8Array (supports ArrayBuffer and Uint8Array/DataView) */
 function toBytes(content: string | ArrayBuffer | ArrayBufferView): Uint8Array {
 	if (content instanceof ArrayBuffer) return new Uint8Array(content);
 	if (ArrayBuffer.isView(content)) return new Uint8Array(content.buffer, content.byteOffset, content.byteLength);
 	throw new Error(t('ctg.import.unsupported_content'));
 }
 
-/** 从 PNG 二进制读宽高（IHDR 头：signature(8) + 长度(4) + "IHDR"(4)，宽高在偏移 16/20） */
+/** Reads a PNG's width/height from its binary (IHDR header: signature(8) + length(4) + "IHDR"(4); width/height at offsets 16/20) */
 function pngSize(bytes: Uint8Array): [number, number] {
 	if (bytes.length < 24) throw new Error(t('ctg.import.invalid_png'));
 	const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	return [v.getUint32(16), v.getUint32(20)];
 }
 
-/** 字节 → base64 data URL（分块拼接，避免大文件超栈） */
+/** Bytes → base64 data URL (chunked concatenation to avoid stack overflow on large files) */
 function arrayBufferToDataURL(bytes: Uint8Array, mime = 'image/png'): string {
 	let bin = '';
 	const CHUNK = 0x8000;
@@ -79,7 +79,7 @@ function arrayBufferToDataURL(bytes: Uint8Array, mime = 'image/png'): string {
 	return `data:${mime};base64,${btoa(bin)}`;
 }
 
-/** 单张 PNG 的公共导入实现（多个导入按钮复用） */
+/** Shared implementation for importing a single PNG (reused by the two portal import buttons) */
 function pickSinglePng(title: string, key: string): Promise<SourceTexture | null> {
 	return new Promise((resolve) => {
 		Filesystem.importFile(
@@ -92,7 +92,7 @@ function pickSinglePng(title: string, key: string): Promise<SourceTexture | null
 			},
 			(files) => {
 				try {
-					// binary 读取可能返回 ArrayBuffer 或 Uint8Array/DataView，统一规范化
+					// binary reads may return ArrayBuffer or Uint8Array/DataView — normalize uniformly
 					const isBinary = (c: unknown): boolean =>
 						typeof c === 'object' && c !== null && (c instanceof ArrayBuffer || ArrayBuffer.isView(c));
 					const f = files.find((x) => isBinary(x.content) && (x.content as any).byteLength > 0);
@@ -113,26 +113,27 @@ function pickSinglePng(title: string, key: string): Promise<SourceTexture | null
 }
 
 /**
- * 从磁盘导入 portal_track.png（可选，铺轨道/枕木）。
- * 返回 SourceTexture（key 'track'）；用户取消/读不到文件时返回 null。
+ * Imports portal_track.png from disk (optional; covers the track/ties).
+ * Returns a SourceTexture (key 'track'); null when cancelled / no file could be read.
  */
 export function pickPortalTrackTexture(): Promise<SourceTexture | null> {
 	return pickSinglePng(t('ctg.import.pick_portal_track'), 'track');
 }
 
 /**
- * 从磁盘导入 portal_track_mip.png（可选，贴覆层块）。
- * 返回 SourceTexture（key 'mip'）；用户取消/读不到文件时返回 null。
+ * Imports portal_track_mip.png from disk (optional; textures the overlay cubes).
+ * Returns a SourceTexture (key 'mip'); null when cancelled / no file could be read.
  */
 export function pickPortalMipTexture(): Promise<SourceTexture | null> {
 	return pickSinglePng(t('ctg.import.pick_portal_mip'), 'mip');
 }
 
 /**
- * 从某个标签页（项目）选中的元素提取零件。
- * 对称点由该项目的模型格式决定（java_block/java_item → (8,8)，其他 → (0,0)）。
- * project 缺省为当前项目（Project）。需要玩家事先在目标标签页中选中组成零件的一组元素。
- * 同时收集这些元素面（cube 面 + mesh 面）所引用的纹理（按 UUID 去重），作为零件的源纹理与分辨率。
+ * Extracts a part from the elements selected in a tab (project). The symmetry point is decided by that
+ * project's model format (java_block/java_item → (8,8), others → (0,0)). project defaults to the
+ * current project (Project). The player must first select, in the target tab, the set of elements that
+ * form the part. Also collects the textures referenced by those elements' faces (cube faces + mesh
+ * faces, deduplicated by UUID) as the part's source textures and resolution.
  */
 export function extractSelectedPart(project?: ModelProject): PartModel {
 	const proj = project ?? (Project as unknown as ModelProject);
@@ -143,7 +144,7 @@ export function extractSelectedPart(project?: ModelProject): PartModel {
 	if (part.cubes.length === 0 && !part.hasMesh) {
 		throw new Error(t('ctg.import.no_selection'));
 	}
-	// 收集选中元素（cube 六面 + mesh 面）引用的纹理 UUID
+	// Collect the texture UUIDs referenced by the selected elements (cube faces + mesh faces)
 	const keys = new Set<string>();
 	for (const r of raws) {
 		for (const key of Object.keys((r as any).faces ?? {})) {
@@ -157,7 +158,7 @@ export function extractSelectedPart(project?: ModelProject): PartModel {
 			textures.push({
 				key: t.uuid,
 				name: t.name,
-				// 用 canvas 导出位图，避免引用旧项目里文件链接的绝对路径
+				// Export the bitmap via canvas to avoid referencing the old project's absolute file-link path
 				source: t.canvas ? t.canvas.toDataURL() : t.source,
 				width: t.width || t.uv_width || 16,
 				height: t.height || t.uv_height || 16,
@@ -165,7 +166,7 @@ export function extractSelectedPart(project?: ModelProject): PartModel {
 		}
 	}
 	part.textures = textures;
-	// 分辨率：所选纹理共享的尺寸；否则回退为该项目的纹理尺寸
+	// Resolution: the shared size of the selected textures; otherwise fall back to the project's texture size
 	if (textures.length > 0) {
 		const w = textures[0].width;
 		const h = textures[0].height;
@@ -180,9 +181,9 @@ export function extractSelectedPart(project?: ModelProject): PartModel {
 }
 
 /**
- * 从当前打开的标签页（项目）中选一个，返回选中的 ModelProject。
- * 用户点选某个标签页后，插件再调用 extractSelectedPart(proj) 提取该标签页已选中的元素。
- * 取消 / 没有标签页时返回 null。
+ * Lets the user pick one of the currently open tabs (projects), returning the chosen ModelProject.
+ * After the user picks a tab, the plugin calls extractSelectedPart(proj) to extract the tab's selected
+ * elements. Returns null when cancelled / no tabs are open.
  */
 export function pickTabProject(): Promise<ModelProject | null> {
 	return new Promise((resolve) => {

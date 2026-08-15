@@ -1,16 +1,18 @@
 /**
- * 工作区创建与纹理导入 —— Blockbench 依赖层。
+ * Workspace creation & texture import — the Blockbench-dependent layer.
  *
- * 生成轨道时不再把产物塞进当前工作区，而是新建一个独立的工作区（模型选项卡）：
- *  - 工作区名由用户在向导里指定
- *  - 工作区纹理分辨率 = 三个输入零件一致的纹理尺寸
- *  - 零件的源纹理被导入该工作区，assembly 层据此把 cube 面的 texture 引用解析成真实 Texture
+ * Generation no longer dumps output into the current workspace; instead it creates a new standalone
+ * workspace (model tab):
+ *  - the workspace name is set by the user in the wizard
+ *  - the workspace texture resolution = the shared texture size of the three input parts
+ *  - the parts' source textures are imported into that workspace, which the assembly layer uses to
+ *    resolve cube-face texture references to real Texture objects
  */
 
 import type { SourceTexture } from '../logic/types';
 import { t } from '../i18n';
 
-/** 从 data URL 导入一张纹理到当前项目 */
+/** Imports a texture into the current project from a data URL */
 function importTexture(st: SourceTexture): Texture {
 	const tex = new Texture();
 	tex.name = st.name;
@@ -22,8 +24,9 @@ function importTexture(st: SourceTexture): Texture {
 }
 
 /**
- * 把零件源纹理导入当前项目（按 source 去重），返回「源纹理 key → 导入的 Texture」映射。
- * 供 assembly 层把 cube 面的 texture 引用（源 key）解析为 Blockbench 的真实 Texture。
+ * Imports the part's source textures into the current project (deduplicated by source), returning a
+ * "source texture key → imported Texture" map for the assembly layer to resolve cube-face texture
+ * references (source keys) to real Blockbench Textures.
  */
 function importSourceTextures(textures: SourceTexture[]): Map<string, Texture> {
 	const bySource = new Map<string, Texture>();
@@ -41,11 +44,13 @@ function importSourceTextures(textures: SourceTexture[]): Map<string, Texture> {
 }
 
 /**
- * 创建存放产物的新工作区并导入零件纹理，返回「源纹理 key → Texture」映射。
- *  - 按指定格式新建工作区：零件含 mesh 组时传 'generic'（自由模型），否则 Java 方块/物品模型
- *  - 设置工作区名与纹理分辨率
- *  - 移除新建工作区自带的默认空白纹理，再导入零件的源纹理
- * 失败（格式无效 / 无法新建）时抛错，由调用方提示。
+ * Creates the output workspace and imports the part textures, returning a "source texture key →
+ * Texture" map.
+ *  - creates the workspace with the given format: 'generic' (free model) when a part has mesh groups,
+ *    otherwise Java block/item model
+ *  - sets the workspace name and texture resolution
+ *  - removes the new workspace's default blank texture, then imports the parts' source textures
+ * Throws on failure (invalid format / cannot create); the caller surfaces the message.
  */
 export function createTrackWorkspace(
 	format: ModelFormat | string,
@@ -59,7 +64,7 @@ export function createTrackWorkspace(
 	Project.name = name;
 	Project.texture_width = textureSize[0];
 	Project.texture_height = textureSize[1];
-	// 移除新建项目自带的默认空白纹理
+	// Remove the default blank texture the new project ships with
 	for (const t of Project.textures.slice()) {
 		t.remove(true);
 	}

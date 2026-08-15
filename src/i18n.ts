@@ -1,42 +1,48 @@
 /**
- * 国际化 —— 翻译数据来自文件系统上的 JSON（lang/en.json、lang/zh.json），
- * 不再硬编码在 TS 代码块里。
+ * Internationalization — translation data comes from JSON files on disk (lang/en.json,
+ * lang/zh.json) rather than being hardcoded in TS.
  *
- * 加载方式：
- *  - 构建时 esbuild 把 lang/*.json 打包进插件（内置默认，保证单文件可独立使用）；
- *  - 运行时 onload 调用 `loadTranslationsFromDisk(pluginPath)`，从插件所在目录的
- *    lang/ 子文件夹重新读取 JSON 覆盖内置默认（直接改 lang/*.json 即可，无需重新构建）。
- *  - 无路径 / lang 目录缺失 / 读取失败时保持内置默认，保证不崩。
+ * Loading:
+ *  - at build time esbuild bundles lang/*.json into the plugin (built-in defaults, so the single file
+ *    works standalone);
+ *  - at runtime onload calls `loadTranslationsFromDisk(pluginPath)` to re-read the JSON from the
+ *    plugin directory's lang/ subfolder, overriding the built-in defaults (edit lang/*.json directly,
+ *    no rebuild needed).
+ *  - if there's no path / the lang directory is missing / reading fails, the built-in defaults are
+ *    kept, so it never crashes.
  *
- * 用法：
- *  - 所有界面文字一律用 `t('ctg.xxx.yyy', [占位0, 占位1], 兜底值?)` 查译。
- *  - 占位符用 Blockbench 的 `%0 / %1 …`（0 基，与 Language 的 tl 语义一致）。
- *  - 注册：本模块顶层调用 `registerTranslations()`（在 esbuild 依赖求值顺序中，
- *    早于任何调用 `t()` 的模块），把词典写入 Blockbench 的 Language 数据。
+ * Usage:
+ *  - all UI text goes through `t('ctg.xxx.yyy', [placeholder0, placeholder1], fallback?)`.
+ *  - placeholders use Blockbench's `%0 / %1 …` (0-based, matching Language's tl semantics).
+ *  - registration: this module calls `registerTranslations()` at its top level (in esbuild's
+ *    dependency evaluation order, before any module that calls `t()`), writing the dictionaries into
+ *    Blockbench's Language data.
  *
- * 环境兼容：
- *  - Blockbench 运行时走全局 `tl`（当前语言数据 + 英文兜底）。
- *  - Node 单测 / 逻辑层无 Blockbench 全局时，`t()` 回退英文词典（同样替换 %N），
- *    保证纯逻辑（logic/）可独立单测，且 logic 内的展示名有确定语言。
+ * Environment compatibility:
+ *  - in Blockbench, `t()` uses the global `tl` (current language data + English fallback).
+ *  - in Node tests / the logic layer without Blockbench globals, `t()` falls back to the English
+ *    dictionary (also replacing %N), so the pure logic (logic/) is independently unit-testable and
+ *    its display names have a deterministic language.
  */
 import enJson from '../lang/en.json';
 import zhJson from '../lang/zh.json';
 
-/** 单条翻译：key → 文案（%0/%1… 占位符） */
+/** Single translation: key → text (with %0/%1… placeholders) */
 type TranslationDict = Record<string, string>;
 
-/** 全部插件文案（内置默认 = 打包的 lang/*.json）；运行时可按磁盘 JSON 覆盖 */
+/** All plugin text (built-in defaults = bundled lang/*.json); overridable at runtime from disk JSON */
 const TRANSLATIONS: Record<'en' | 'zh', TranslationDict> = { en: enJson, zh: zhJson };
 
-/** 当前语言 code（Node 无 Language 全局时按英文处理；其他语言回退英文） */
+/** Current language code (English when Node has no Language global; other languages fall back to English) */
 function currentLang(): 'en' | 'zh' {
 	const code = typeof Language !== 'undefined' ? Language.code : 'en';
 	return code === 'zh' ? 'zh' : 'en';
 }
 
 /**
- * 翻译：Blockbench 运行时走全局 `tl`（当前语言数据 + %N 占位替换，英文兜底）；
- * Node / 逻辑层无 `tl` 时回退英文词典（同样替换 %N），保证纯逻辑可单测。
+ * Translate: in Blockbench it uses the global `tl` (current language data + %N placeholder
+ * replacement, English fallback); in Node / the logic layer without `tl` it falls back to the English
+ * dictionary (also replacing %N), keeping the pure logic unit-testable.
  */
 export function t(key: string, vars?: string | number | (string | number)[], def?: string): string {
 	if (typeof tl === 'function') {
@@ -46,7 +52,7 @@ export function t(key: string, vars?: string | number | (string | number)[], def
 	let out = table[key] ?? def ?? key;
 	if (vars) {
 		const arr = Array.isArray(vars) ? vars : [vars];
-		// 占位符 %0/%1/…（0 基），与 Blockbench 的 tl 语义一致：%0→arr[0]、%1→arr[1]…
+		// Placeholders %0/%1/… (0-based), matching Blockbench's tl semantics: %0→arr[0], %1→arr[1]…
 		for (let i = arr.length - 1; i >= 0; i--) {
 			out = out.replace(new RegExp('%' + i, 'g'), String(arr[i]));
 		}
@@ -55,9 +61,10 @@ export function t(key: string, vars?: string | number | (string | number)[], def
 }
 
 /**
- * 把插件词典写入 Blockbench 的 Language 数据（`addTranslations` 会按当前语言合并，
- * 并始终保留 en 兜底）。本模块被所有用 `t()` 的模块 import，按依赖求值顺序，
- * 这里的顶层调用早于任何 `t()` 的执行。Node 环境无 Language 全局时安全跳过。
+ * Writes the plugin dictionaries into Blockbench's Language data (`addTranslations` merges by current
+ * language and always keeps the en fallback). Imported by every module that uses `t()`; by dependency
+ * evaluation order this top-level call runs before any `t()` executes. Safely skipped in Node without
+ * a Language global.
  */
 export function registerTranslations(): void {
 	if (typeof Language === 'undefined') return;
@@ -65,21 +72,23 @@ export function registerTranslations(): void {
 	Language.addTranslations('zh', TRANSLATIONS.zh);
 }
 
-// 顶层注册：确保模块被求值即完成注册（见模块注释）
+// Top-level registration: the module registers as soon as it is evaluated (see module comment)
 registerTranslations();
 
 /**
- * Blockbench 加载插件脚本用 `new Function("requireNativeModule","require",code)` 求值，
- * scoped require 以局部参数 `requireNativeModule`（与 `require`）注入插件作用域。
- * 用 `requireNativeModule` 是因为 esbuild 会把自由标识符 `require` 改名为 `__require`
- * （undefined），而 `requireNativeModule` 原样保留。这里做类型声明；Web 端不存在时 typeof 守卫兜底。
+ * Blockbench evaluates plugin scripts via `new Function("requireNativeModule","require",code)`,
+ * injecting the scoped require as local params `requireNativeModule` (and `require`). Using
+ * `requireNativeModule` matters because esbuild renames the free identifier `require` to `__require`
+ * (undefined), while `requireNativeModule` is preserved as-is. Type-declared here; guarded with
+ * typeof when absent on web.
  */
 declare const requireNativeModule: ((id: string, options?: Record<string, unknown>) => any) | undefined;
 
 /**
- * 运行时从插件所在目录读取 lang/en.json、lang/zh.json，覆盖内置默认并重新注册。
- * pluginPath 为插件文件路径（index.ts onload 经 `Plugins.registered[id].path` 传入）。
- * 无路径 / 文件缺失 / 读取失败时保持内置默认（打包进产物的 JSON），保证单文件也能用。
+ * At runtime, reads lang/en.json and lang/zh.json from the plugin directory, overriding the built-in
+ * defaults and re-registering. pluginPath is the plugin file path (passed in from index.ts onload via
+ * `Plugins.registered[id].path`). Keeps the built-in defaults (bundled into the artifact) when there's
+ * no path / files are missing / reading fails, so the single file still works.
  */
 export function loadTranslationsFromDisk(pluginPath?: string): void {
 	if (typeof pluginPath !== 'string' || !pluginPath) return;
@@ -104,9 +113,9 @@ export function loadTranslationsFromDisk(pluginPath?: string): void {
 		TRANSLATIONS.zh = zh;
 		registerTranslations();
 	} catch {
-		// lang 目录缺失或读取失败：保持内置默认
+		// lang directory missing or read failed: keep the built-in defaults
 	}
 }
 
-/** scoped require 的返回（fs 等 Node 模块） */
+/** The return type of a scoped require (fs and other Node modules) */
 type ScopedRequire = (id: string, options?: Record<string, unknown>) => any;

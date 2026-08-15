@@ -1,20 +1,22 @@
 /**
- * 导出层 —— 把当前工作区轨道大组（名 = 工作区名）下的各分组，
- * 按四种模式（new_java / classic_java / bedrock / obj）导出到用户指定文件夹。
+ * Export layer — exports the groups under the current workspace's track parent group (named after the
+ * workspace) in four modes (new_java / classic_java / bedrock / obj) to a user-chosen folder.
  *
- * 导出配置用与「生成」类似的单页大对话框收集（左侧配置 / 右侧每张纹理的资源路径）：
- *  - 导出模式 / 命名空间 / 轨道 id 由用户填写；
- *  - 导出根目录 = 资源包 assets/{命名空间} 所在目录——所有文件都写到这里，归类为
- *    models/ textures/ blockstates/；
- *  - 模型资源路径 = 写入模型文件的 {命名空间}:path/file 的 path（blockstates 引用模型用），
- *    默认 block/track/{轨道id}；模型写到 根目录/models/{path}/；
- *  - 每张纹理一个资源路径（模型引用纹理用），默认同样 block/track/{轨道id}；
- *    纹理写到 根目录/textures/{path}/。
- * 所有路径字段都可手动编辑，并预置默认生成的路径；文件内引用直接用这些资源路径。
+ * Export configuration is collected in a single large dialog similar to generation (config on the
+ * left / per-texture resource paths on the right):
+ *  - export mode / namespace / track id are filled in by the user;
+ *  - the export root is the directory holding the resource pack's assets/{namespace} — everything is
+ *    written there, organized into models/ textures/ blockstates/;
+ *  - the model resource path is the {namespace}:path/file path used for the written model files (what
+ *    blockstates reference), default block/track/{trackId}; models are written to root/models/{path}/;
+ *  - each texture has its own resource path (what models reference), also defaulting to
+ *    block/track/{trackId}; textures are written to root/textures/{texturePath}/.
+ * All path fields are editable and pre-filled with default-generated paths; in-file references use
+ * these resource paths directly.
  *
- * 文件写入用 Blockbench 的 scoped `require('fs', { scope })`（桌面端，首次会请求
- * 「访问文件夹」权限）；Node 冒烟测试里用 global.require 桩替换。
- * 无法导出的判定与各格式序列化在纯逻辑层 src/logic/export.ts（可单测）。
+ * File writing uses Blockbench's scoped `require('fs', { scope })` (desktop; requests "folder access"
+ * the first time); Node smoke tests substitute a global.require stub. Eligibility checks and per-format
+ * serialization live in the pure logic layer src/logic/export.ts (unit-testable).
  */
 
 import {
@@ -42,14 +44,15 @@ import type { CubeFaceDirection, Vec3 } from '../logic/types';
 import { t } from '../i18n';
 import type { DialogOptions } from 'blockbench-types/generated/interface/dialog';
 
-/** 轨道大组（父分组）的名称，与 buildAllShapes 里创建的一致 */
+/** The track parent group's name, matching the one created in buildAllShapes */
 export const TRACK_PARENT_NAME = '机械动力轨道';
 
 /**
- * Blockbench 加载插件脚本用 `new Function("requireNativeModule","require",code)` 求值，
- * scoped require 以局部参数 `requireNativeModule`（与 `require`）注入插件作用域。
- * 用 `requireNativeModule` 是因为 esbuild 会把自由标识符 `require` 改名为 `__require`
- * （undefined），而 `requireNativeModule` 原样保留。这里做类型声明；Web 端不存在时 typeof 守卫兜底。
+ * Blockbench evaluates plugin scripts via `new Function("requireNativeModule","require",code)`,
+ * injecting the scoped require as local params `requireNativeModule` (and `require`). Using
+ * `requireNativeModule` matters because esbuild renames the free identifier `require` to `__require`
+ * (undefined), while `requireNativeModule` is preserved as-is. Type-declared here; guarded with
+ * typeof when absent on web.
  */
 declare const requireNativeModule: ((id: string, options?: Record<string, unknown>) => any) | undefined;
 
@@ -57,9 +60,9 @@ type ScopedRequire = (id: string, options?: Record<string, unknown>) => any;
 type ExportFs = { mkdirSync(p: string, opts?: { recursive?: boolean }): void; writeFileSync(p: string, content: string | Uint8Array, opts?: unknown): void };
 
 /**
- * 取得 Blockbench 插件环境的 scoped require。
- * 优先级：`globalThis.require`（Node 冒烟测试桩、Dev Tools 模式的 window.require）
- * → 插件局部参数 `requireNativeModule`（桌面端正常路径，esbuild 原样保留）。
+ * Resolves the scoped require in the Blockbench plugin environment.
+ * Priority: `globalThis.require` (Node smoke-test stub, Dev-Tools-mode window.require)
+ * → the plugin-local param `requireNativeModule` (normal desktop path, preserved as-is by esbuild).
  */
 function nodeRequire(): ScopedRequire | undefined {
 	const g = globalThis as { require?: unknown };
@@ -68,7 +71,7 @@ function nodeRequire(): ScopedRequire | undefined {
 	return typeof local === 'function' ? local : undefined;
 }
 
-/** 取得以 dir 为根的 scoped fs；失败（未授权等）返回 undefined */
+/** Returns a scoped fs rooted at dir; undefined on failure (e.g. not authorized) */
 function scopedFs(dir: string): ExportFs | undefined {
 	const req = nodeRequire();
 	if (!req) return undefined;
@@ -79,17 +82,17 @@ function scopedFs(dir: string): ExportFs | undefined {
 	}
 }
 
-/** 把 scope 目录与若干相对路径段拼成绝对路径（统一正斜杠） */
+/** Joins the scope directory with relative path segments into an absolute path (forward slashes) */
 function joinPath(dir: string, ...rel: string[]): string {
 	return `${dir.replace(/[\\/]+$/, '')}/${rel.join('/')}`;
 }
 
-/** 纹理的实际像素尺寸（宽, 高） */
+/** A texture's actual pixel size (width, height) */
 function textureSizeOf(tex: Texture): [number, number] {
 	return [tex.width || tex.uv_width || 16, tex.height || tex.uv_height || 16];
 }
 
-/** data URL → Uint8Array（PNG 写盘用） */
+/** data URL → Uint8Array (for writing the PNG) */
 function dataUrlToBytes(url: string): Uint8Array {
 	const comma = url.indexOf(',');
 	const b64 = url.slice(comma + 1);
@@ -99,7 +102,7 @@ function dataUrlToBytes(url: string): Uint8Array {
 	return bytes;
 }
 
-/** 面纹理引用（Texture 实例 或 uuid）→ Texture；无法解析返回 undefined */
+/** Face texture reference (Texture instance or uuid) → Texture; undefined when unresolvable */
 function faceTextureOf(v: unknown): Texture | undefined {
 	if (v instanceof Texture) return v;
 	if (typeof v === 'string') {
@@ -110,9 +113,11 @@ function faceTextureOf(v: unknown): Texture | undefined {
 }
 
 /**
- * 找到当前项目里的轨道大组。大组名 = 生成时的工作区名（默认 'track'）。
- * 从多个权威来源收集顶层分组（Outliner 树根 / Project.elements / Group.all 顶层组，按 uuid 去重），
- * 依次按：① 当前工作区名（新约定）→ ② 旧名「机械动力轨道」（兼容旧工作区）→ ③ 含已知形状子分组的启发式。
+ * Finds the track parent group in the current project. Its name = the workspace name used at
+ * generation (default 'track'). Collects top-level groups from multiple authoritative sources
+ * (Outliner tree root / Project.elements / Group.all top-level groups, deduplicated by uuid), then
+ * matches: ① current workspace name (new convention) → ② the legacy name TRACK_PARENT_NAME (compat
+ * with old workspaces) → ③ a heuristic for groups directly containing known shape subgroups.
  */
 export function findTrackGroup(): Group | null {
 	const seen = new Set<string>();
@@ -125,13 +130,13 @@ export function findTrackGroup(): Group | null {
 		}
 		candidates.push(el);
 	};
-	// ① Outliner 树根（顶层元素权威数组）
+	// ① Outliner tree root (the authoritative top-level element array)
 	const outlinerRoot = (globalThis as { Outliner?: { root?: unknown } }).Outliner?.root;
 	if (Array.isArray(outlinerRoot)) outlinerRoot.forEach(add);
-	// ② Project.elements（创建时 init() 也 safePush 到这里）
+	// ② Project.elements (init() also safePushes here on creation)
 	const projElements = (Project as any).elements;
 	if (Array.isArray(projElements)) projElements.forEach(add);
-	// ③ Group.all 里的顶层分组（兜底；Blockbench 顶层组的 parent 是字符串 'root'）
+	// ③ Top-level groups in Group.all (fallback; Blockbench top-level groups have parent string 'root')
 	const allGroups = (globalThis as { Group?: { all?: unknown } }).Group?.all;
 	if (Array.isArray(allGroups)) {
 		for (const g of allGroups) {
@@ -140,13 +145,13 @@ export function findTrackGroup(): Group | null {
 		}
 	}
 	const wanted = String((Project as any).name || '').trim() || 'track';
-	// ① 当前工作区名（= 大组名）
+	// ① Current workspace name (= the parent group name)
 	const byWorkspace = candidates.find((g) => g.name === wanted);
 	if (byWorkspace) return byWorkspace;
-	// ② 旧名（兼容旧版本生成的工作区）
+	// ② Legacy name (compat with workspaces generated by older versions)
 	const legacy = candidates.find((g) => g.name === TRACK_PARENT_NAME);
 	if (legacy) return legacy;
-	// ③ 启发式：直接含已知形状子分组的组
+	// ③ Heuristic: a group directly containing known shape subgroups
 	const known = new Set(Object.keys(TRACK_MODEL_FILES));
 	return (
 		candidates.find((g) =>
@@ -156,8 +161,9 @@ export function findTrackGroup(): Group | null {
 }
 
 /**
- * 全局收集所有分组引用的纹理：分配稳定 key（t0/t1…）+ 全局去重的资源名 + 尺寸 + 位图。
- * 供所有形状的 JSON / OBJ / 基岩版几何共用同一资源名，PNG 只写一次。
+ * Globally collects every texture referenced by the groups: assigns stable keys (t0/t1…) + globally
+ * deduplicated resource names + sizes + bitmaps. All shapes' JSON / OBJ / Bedrock geometry share the
+ * same resource names, and each PNG is written once.
  */
 function collectTexturesGlobal(subgroups: Group[]): { infos: ExportTexture[]; keyOf: Map<Texture, string> } {
 	const usedNames = new Set<string>();
@@ -190,7 +196,7 @@ function collectTexturesGlobal(subgroups: Group[]): { infos: ExportTexture[]; ke
 	return { infos, keyOf };
 }
 
-/** 从 live Group 抽取平台无关的元素描述符（cube / mesh + 面纹理 key） */
+/** Extracts platform-neutral element descriptors from a live Group (cube / mesh + face texture keys) */
 function extractElements(group: Group, keyOf: Map<Texture, string>): ExportElement[] {
 	const out: ExportElement[] = [];
 	for (const child of group.children ?? []) {
@@ -231,7 +237,7 @@ function extractElements(group: Group, keyOf: Map<Texture, string>): ExportEleme
 	return out;
 }
 
-/** 形状实际引用的纹理（按全局注册顺序），供模型 / MTL / blocks.json 引用 */
+/** The textures a shape actually references (in global registration order), for model / MTL / blocks.json */
 function shapeTextures(elements: ExportElement[], infos: ExportTexture[]): ExportTexture[] {
 	const keys = new Set<string>();
 	for (const el of elements) {
@@ -242,7 +248,7 @@ function shapeTextures(elements: ExportElement[], infos: ExportTexture[]): Expor
 	return infos.filter((tex) => keys.has(tex.key));
 }
 
-/** 写一张纹理 PNG（按绝对路径去重，只写一次）。不再检测纹理尺寸——生成阶段已校验过零件纹理一致性。 */
+/** Writes one texture PNG (deduplicated by absolute path, written once). No texture-size check — generation already validated part texture consistency. */
 function writeTexturePng(
 	fs: ExportFs,
 	dir: string,
@@ -264,31 +270,32 @@ function writeTexturePng(
 	}
 }
 
-// ── 导出配置大对话框 ──────────────────────────────────────────
+// ── Export configuration large dialog ──────────────────────────────────────
 
-/** 导出配置（对话框收集后传给 writeTrackExport） */
+/** Export configuration (collected by the dialog, passed to writeTrackExport) */
 export interface ExportOptions {
 	mode: ExportMode;
 	namespace: string;
 	trackId: string;
-	/** 导出根目录（资源包 assets/{命名空间} 所在目录，所有文件都写到这里） */
+	/** Export root (directory holding the resource pack's assets/{namespace}; everything is written here) */
 	root: string;
 	/**
-	 * 模型资源路径（blockstates 引用模型用 {命名空间}:path/file 的 path，如 block/track/{id}）。
-	 * 模型写到 根目录/models/{path}/，blockstates 引用 {命名空间}:{path}/{形状}。
+	 * Model resource path (the {namespace}:path/file path blockstates use to reference models, e.g.
+	 * block/track/{id}). Models are written to root/models/{path}/, blockstates reference
+	 * {namespace}:{path}/{shape}.
 	 */
 	modelPath: string;
-	/** texture key → 纹理资源路径（模型引用纹理用 {命名空间}:path/file 的 path） */
+	/** texture key → texture resource path (what models reference as {namespace}:path/file) */
 	texturePaths: Record<string, string>;
 }
 
-/** 对话框的表单状态（供 DOM 绑定与冒烟测试驱动共享） */
+/** The dialog's form state (shared by the DOM bindings and the smoke-test driver) */
 interface ExportFormState extends ExportOptions {
-	/** 每个字段是否被用户改动过（改动后不再被默认路径覆盖） */
+	/** Whether each field was edited by the user (edited fields are no longer overwritten by default paths) */
 	dirty: { model: boolean; textures: Record<string, boolean> };
 }
 
-/** 冒烟测试驱动导出对话框的钩子（真实 Blockbench 不依赖它） */
+/** Smoke-test driver hook for the export dialog (real Blockbench doesn't depend on it) */
 export interface ExportDriver {
 	setMode(mode: ExportMode): void;
 	setNamespace(v: string): void;
@@ -300,7 +307,7 @@ export interface ExportDriver {
 	getState(): ExportFormState;
 }
 
-/** 导出根目录的默认生成路径：优先当前项目文件所在目录，否则桌面 / 主目录下的 create_track_export */
+/** Default export root: the current project file's directory when available, otherwise create_track_export under the desktop / home */
 function defaultExportRoot(): string {
 	const proj = Project as any;
 	const fp = typeof proj.save_path === 'string' ? proj.save_path : proj.file_path;
@@ -318,10 +325,10 @@ function defaultExportRoot(): string {
 	return base ? joinPath(base, 'create_track_export') : '';
 }
 
-/** 重新按 mode / trackId 生成默认资源路径（只覆盖用户未改动的字段） */
+/** Regenerates the default resource paths for the current mode / trackId (only overwrites unedited fields) */
 function recomputeDefaults(state: ExportFormState): void {
 	const javaLike = state.mode !== 'bedrock';
-	// Java/OBJ 惯例 block/track/{id}；基岩版惯例 blocks/{id}
+	// Java/OBJ convention block/track/{id}; Bedrock convention blocks/{id}
 	const sub = javaLike ? `block/track/${state.trackId}` : `blocks/${state.trackId}`;
 	if (!state.dirty.model) state.modelPath = sub;
 	for (const key of Object.keys(state.texturePaths)) {
@@ -330,7 +337,8 @@ function recomputeDefaults(state: ExportFormState): void {
 }
 
 /**
- * 校验资源路径是否合法：小写字母/数字/`/`/`_`/`.`/`-`，不以 / 开头或结尾，不含 `..` 段。
+ * Validates a resource path: lowercase letters/digits/`/`/`_`/`.`/`-`, not starting or ending with `/`,
+ * and no `..` segments.
  */
 function isValidResourcePath(p: string): boolean {
 	if (!p || p.startsWith('/') || p.endsWith('/')) return false;
@@ -339,7 +347,7 @@ function isValidResourcePath(p: string): boolean {
 	return true;
 }
 
-// ── 导出对话框样式（与生成对话框同风格）────────────────────────
+// ── Export dialog styles (same style as the generate dialog) ────────────────
 const EXPORT_STYLE_ID = 'create-track-gen-export-dialog-styles';
 const EXPORT_STYLE = `
 #create-track-gen-export-dialog .ctg-export {
@@ -374,7 +382,7 @@ const EXPORT_STYLE = `
 }
 #create-track-gen-export-dialog .ctg-exp-input-row { display: flex; gap: 6px; align-items: center; }
 #create-track-gen-export-dialog .ctg-exp-input-row input.ctg-exp-path { flex: 1; min-width: 0; }
-/* 资源路径等文本输入框：明确可编辑样式 + 全宽 */
+/* Text inputs such as resource paths: clearly editable + full width */
 #create-track-gen-export-dialog input.ctg-exp-path,
 #create-track-gen-export-dialog select.ctg-exp-select {
 	width: 100%;
@@ -420,7 +428,7 @@ const EXPORT_STYLE = `
 #create-track-gen-export-dialog .dialog_bar.button_bar { text-align: right; }
 `;
 
-/** 注入导出对话框样式（有 document 时；Node 冒烟测试安全跳过） */
+/** Injects the export dialog styles (when a document exists; safely skipped in Node smoke tests) */
 export function injectExportStyles(): void {
 	if (typeof document === 'undefined') return;
 	if (document.getElementById(EXPORT_STYLE_ID)) return;
@@ -430,13 +438,12 @@ export function injectExportStyles(): void {
 	document.head.appendChild(style);
 }
 
-/** 卸载时清理导出对话框样式 */
 export function disposeExportStyles(): void {
 	if (typeof document === 'undefined') return;
 	document.getElementById(EXPORT_STYLE_ID)?.remove();
 }
 
-/** 创建带类名与文本的 DOM 元素 */
+/** Creates a DOM element with a class name and text */
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
 	const node = document.createElement(tag);
 	if (className) node.className = className;
@@ -445,9 +452,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 }
 
 /**
- * 导出配置对话框（单页大框框，两列：左侧导出配置 + 右侧每张纹理的导出路径）。
- * 所有路径字段均为可编辑文本框 + 「浏览…」按钮，并预置默认生成的路径。
- * 返回 null 表示取消。
+ * Export configuration dialog (single large frame, two columns: export config on the left + each
+ * texture's export path on the right). All path fields are editable text boxes + "Browse…" buttons,
+ * pre-filled with default-generated paths. Returns null when cancelled.
  */
 export function promptExportOptions(
 	defaultTrackId: string,
@@ -461,7 +468,8 @@ export function promptExportOptions(
 			resolve(v);
 		};
 
-		// 表单状态（初始：默认模式 classic_java + 默认命名空间 create + 默认根目录 + 默认资源路径）
+		// Form state (initial: default mode classic_java + default namespace create + default root +
+		// default resource paths)
 		const state: ExportFormState = {
 			mode: 'classic_java',
 			namespace: 'create',
@@ -483,9 +491,9 @@ export function promptExportOptions(
 			Blockbench.showMessageBox({ title: t('ctg.invalid_input'), message, buttons: [t('ctg.ok')], confirm: 0 });
 		};
 
-		/** 校验并把合法结果交给 finish；非法时弹提示并保持对话框打开 */
+		/** Validates and hands the legal result to finish; on invalid input pops a message and keeps the dialog open */
 		const confirmExport = (): boolean => {
-			syncFromDom(); // 兜底：采用用户在 DOM 输入框里实际填写的值
+			syncFromDom(); // fallback: adopt the values the user actually typed in the DOM inputs
 			const namespace = state.namespace.trim();
 			const trackId = state.trackId.trim();
 			const valid = /^[a-z0-9_]+$/;
@@ -560,7 +568,7 @@ export function promptExportOptions(
 			},
 		};
 
-		/** 把 state 里的资源路径同步回 DOM 输入框 */
+		/** Syncs the resource paths in state back to the DOM inputs */
 		const renderExportPaths = (node: HTMLElement, s: ExportFormState): void => {
 			const set = (key: string, v: string): void => {
 				const input = node.querySelector<HTMLInputElement>(`[data-export="${key}"]`);
@@ -574,7 +582,7 @@ export function promptExportOptions(
 			}
 		};
 
-		/** 一个普通文本框（namespace / 资源路径等），data-export 标识绑定目标 */
+		/** A plain text box (namespace / resource path etc.), data-export identifies the binding target */
 		const textField = (which: string, value: string, texKey?: string): HTMLInputElement => {
 			const input = el('input', 'ctg-exp-path') as HTMLInputElement;
 			input.type = 'text';
@@ -584,7 +592,7 @@ export function promptExportOptions(
 			return input;
 		};
 
-		/** 一个带「浏览…」按钮的文件夹字段（仅导出根目录用） */
+		/** A folder field with a "Browse…" button (export root only) */
 		const rootField = (): HTMLElement => {
 			const row = el('div', 'ctg-exp-input-row');
 			const input = textField('root', state.root);
@@ -600,13 +608,13 @@ export function promptExportOptions(
 			return row;
 		};
 
-		/** 当前模式/轨道 id 下的默认资源路径（Java block/track/{id}，基岩版 blocks/{id}） */
+		/** The default resource path for the current mode / track id (Java block/track/{id}, Bedrock blocks/{id}) */
 		const defaultPathFor = (): string => {
 			const javaLike = state.mode !== 'bedrock';
 			return javaLike ? `block/track/${state.trackId}` : `blocks/${state.trackId}`;
 		};
 
-		/** 资源路径字段（文本框 + 「重置」按钮），重置回默认路径 */
+		/** A resource path field (text box + "Reset" button), resetting to the default path */
 		const pathRow = (which: string, value: string, texKey?: string): HTMLElement => {
 			const row = el('div', 'ctg-exp-input-row');
 			row.append(textField(which, value, texKey));
@@ -627,7 +635,7 @@ export function promptExportOptions(
 			return row;
 		};
 
-		/** 一个带标签与说明的字段行 */
+		/** A field row with a label and an optional hint */
 		const fieldRow = (label: string, input: HTMLElement, hint?: string): HTMLElement => {
 			const row = el('div', 'ctg-exp-field');
 			row.append(el('label', undefined, label));
@@ -636,12 +644,12 @@ export function promptExportOptions(
 			return row;
 		};
 
-		/** 构建导出对话框的两列 DOM（无 document 时返回空字符串，供 Node 测试跳过渲染） */
+		/** Builds the export dialog's two-column DOM (empty string without a document, letting Node tests skip rendering) */
 		const buildExportLines = (): HTMLElement | '' => {
 			if (typeof document === 'undefined') return '';
 			const wrap = el('div', 'ctg-export');
 
-			// ── 左列：导出配置（非路径项）──
+			// ── Left column: export config (non-path items) ──
 			const left = el('div', 'ctg-col');
 			left.append(el('div', 'ctg-col-title', t('ctg.export.col_config')));
 
@@ -659,13 +667,14 @@ export function promptExportOptions(
 
 			wrap.append(left);
 
-			// ── 右列：全部路径调整项（根目录 / 模型资源路径 / 每张纹理资源路径）──
+			// ── Right column: all path adjustments (root / model resource path / per-texture resource path) ──
 			const right = el('div', 'ctg-col');
 			right.append(el('div', 'ctg-col-title', t('ctg.export.col_paths')));
 			right.append(fieldRow(t('ctg.export.root'), rootField(), t('ctg.export.root.desc')));
 			right.append(fieldRow(t('ctg.export.model_path'), pathRow('model', state.modelPath), t('ctg.export.model_path.desc')));
 
-			// 纹理资源路径的小标题：字号与「模型资源路径」等字段标签一致（不用列标题的大写字距样式）
+			// Texture resource path subtitle: same size as the "model resource path" field labels (not the
+			// uppercase letter-spaced column-title style)
 			const texTitle = el('div', 'ctg-export-sub-title', t('ctg.export.col_textures'));
 			texTitle.style.marginTop = '16px';
 			right.append(texTitle);
@@ -681,12 +690,12 @@ export function promptExportOptions(
 			}
 			wrap.append(right);
 
-			// 初始同步一次默认路径
+			// Initial sync of the default paths
 			renderExportPaths(wrap, state);
 			return wrap;
 		};
 
-		/** 绑定 DOM 输入事件 → state（含资源路径默认值联动）。同时监听 input + change，保证值被捕获 */
+		/** Binds DOM input events → state (including resource-path default linking). Listens to both input + change so values are captured */
 		const wireExportDom = (node: HTMLElement): void => {
 			node.querySelectorAll('[data-export]').forEach((input) => {
 				const key = (input as HTMLElement).getAttribute('data-export');
@@ -719,8 +728,9 @@ export function promptExportOptions(
 		};
 
 		/**
-		 * 确认前把 DOM 输入框的当前值同步回 state —— 兜底保证用户手动编辑的路径一定被采用，
-		 * 即使 input 监听在某些环境下未触发。无 document（冒烟测试）时跳过。
+		 * Before confirming, syncs the DOM inputs' current values back to state — a fallback ensuring the
+		 * paths the user manually edited are always adopted, even if input listeners don't fire in some
+		 * environment. Skipped without a document (smoke tests).
 		 */
 		const syncFromDom = (): void => {
 			if (!dialogNode) return;
@@ -775,7 +785,7 @@ export function promptExportOptions(
 			},
 		} as DialogOptions & { _driver?: ExportDriver };
 
-		// 冒烟测试钩子：直接驱动表单状态 + 确认（真实 Blockbench 不依赖它）
+		// Smoke-test hook: drives the form state + confirm directly (real Blockbench doesn't depend on it)
 		config._driver = driver;
 
 		injectExportStyles();
@@ -784,14 +794,15 @@ export function promptExportOptions(
 }
 
 /**
- * 把轨道大组下的各分组按 mode 导出到配置的目录：
- *  - Java（new_java / classic_java）：元素模型 JSON + 纹理；无法导出的分组回退 OBJ
- *  - obj：全部分组烘焙为单一合并网格 OBJ（.obj + .mtl + forge:obj 引用 JSON）
- *  - bedrock：minecraft:geometry + blocks.json + 纹理；无法导出的分组回退 OBJ
- *  - Java / OBJ 模式写 blockstates 到 root；基岩版模式写 blocks.json 到 root
- * 写盘位置由资源路径派生：模型 → root/models/{modelPath}/，纹理 → root/textures/{texturePath}/
- * （texturePath 每张纹理各自配置）；文件内引用直接用这些资源路径（{命名空间}:{path}/…）。
- * 返回统计信息（写出的文件、跳过的分组、警告）。
+ * Exports the groups under the track parent group according to mode into the configured directory:
+ *  - Java (new_java / classic_java): element model JSON + textures; groups that can't be exported fall
+ *    back to OBJ
+ *  - obj: every group baked into a single merged OBJ mesh (.obj + .mtl + forge:obj reference JSON)
+ *  - bedrock: minecraft:geometry + blocks.json + textures; groups that can't be exported fall back to OBJ
+ *  - Java / OBJ modes write blockstates to root; Bedrock writes blocks.json to root
+ * Write locations are derived from the resource paths: models → root/models/{modelPath}/, textures →
+ * root/textures/{texturePath}/ (each texture its own path); in-file references use these resource
+ * paths directly. Returns statistics (files written, skipped groups, warnings).
  */
 export function writeTrackExport(opts: ExportOptions & {
 	subgroups: Group[];
@@ -807,9 +818,9 @@ export function writeTrackExport(opts: ExportOptions & {
 	const projH = (Project as any).texture_height || 16;
 	const fallbackSize: [number, number] = [projW, projH];
 
-	/** 模型写盘目录（绝对）：root/models/{modelPath}/ */
+	/** Model write directory (absolute): root/models/{modelPath}/ */
 	const modelDir = joinPath(root, `models/${modelPath}`);
-	/** 某张纹理的写盘目录（绝对）：root/textures/{texturePath}/ */
+	/** A texture's write directory (absolute): root/textures/{texturePath}/ */
 	const textureDirOf = (key: string): string => joinPath(root, `textures/${texturePaths[key] ?? modelPath}`);
 
 	const sizeOf: Record<string, [number, number]> = {};
@@ -820,7 +831,7 @@ export function writeTrackExport(opts: ExportOptions & {
 	const warnings: string[] = [];
 	const writtenTextures = new Set<string>();
 
-	/** 基岩版 blocks.json 里定义的形状（只有原生导出的形状） */
+	/** The shapes defined in the Bedrock blocks.json (only natively exported shapes) */
 	const bedrockShapes: { id: string; texturePath: string }[] = [];
 
 	for (const group of subgroups) {
@@ -834,7 +845,7 @@ export function writeTrackExport(opts: ExportOptions & {
 		const shapeTexs = shapeTextures(elements, texInfos);
 
 		if (mode === 'obj' || groupNeedsObj(elements, mode)) {
-			// ── OBJ（单一合并网格）或回退 ──
+			// ── OBJ (single merged mesh) or fallback ──
 			const shape = file.replace(/\.json$/, '');
 			const objRes = buildObj({ elements, textures: shapeTexs, sizeOf, namespace, trackId, mtlName: `${shape}.mtl`, texturePathOf: texturePaths });
 			fs.mkdirSync(modelDir, { recursive: true });
@@ -847,7 +858,7 @@ export function writeTrackExport(opts: ExportOptions & {
 				warnings.push(t('ctg.export.bedrock_fallback', id));
 			}
 		} else if (mode === 'bedrock') {
-			// ── 基岩版 geometry ──
+			// ── Bedrock geometry ──
 			const ts: [number, number] = shapeTexs[0] ? [shapeTexs[0].width, shapeTexs[0].height] : fallbackSize;
 			const geo = buildBedrockGeometry({ identifier: `geometry.${trackId}_${id}`, elements, textureSize: ts });
 			fs.mkdirSync(modelDir, { recursive: true });
@@ -856,7 +867,7 @@ export function writeTrackExport(opts: ExportOptions & {
 			for (const tex of shapeTexs) writeTexturePng(fs, textureDirOf(tex.key), tex, files, warnings, writtenTextures);
 			if (shapeTexs[0]) bedrockShapes.push({ id, texturePath: `${texturePaths[shapeTexs[0].key] ?? modelPath}/${shapeTexs[0].resName}` });
 		} else {
-			// ── Java JSON（经典 / 新）──
+			// ── Java JSON (classic / new) ──
 			const json = buildJavaModelJson({ mode, elements, textures: shapeTexs, textureSize: fallbackSize, namespace, trackId, texturePathOf: texturePaths });
 			fs.mkdirSync(modelDir, { recursive: true });
 			fs.writeFileSync(joinPath(modelDir, file), JSON.stringify(json, null, '\t'));
@@ -870,7 +881,7 @@ export function writeTrackExport(opts: ExportOptions & {
 		fs.writeFileSync(joinPath(root, 'blocks.json'), JSON.stringify(blocksJson, null, '\t'));
 		files.push(joinPath(root, 'blocks.json'));
 	} else {
-		// MC 要求 blockstates 文件直接罗列在 blockstates/ 下（不支持子文件夹）
+		// MC requires blockstates files directly under blockstates/ (no subfolders supported)
 		const bsFile = blockstatesFileName(trackId);
 		fs.mkdirSync(joinPath(root, 'blockstates'), { recursive: true });
 		fs.writeFileSync(joinPath(root, `blockstates/${bsFile}`), JSON.stringify(buildBlockstates(namespace, trackId, modelPath), null, '\t'));
@@ -881,9 +892,9 @@ export function writeTrackExport(opts: ExportOptions & {
 }
 
 /**
- * 导出结果对话框：比默认消息框更宽（640px），每条警告/提示独立显示框。
- * Blockbench 有 document 时用自定义 DOM 对话框；Node 冒烟测试无 document 时
- * 退化为 showMessageBox（仅汇总文本，警告仍逐条列出）。
+ * Export result dialog: wider than the default message box (640px), with each warning/notice in its
+ * own box. Uses a custom DOM dialog when a document exists; in Node smoke tests without a document it
+ * degrades to showMessageBox (summary text only, warnings still listed one per line).
  */
 function showExportResult(opts: { title: string; summary: string[]; notes: string[] }): void {
 	if (typeof document === 'undefined') {
@@ -893,7 +904,7 @@ function showExportResult(opts: { title: string; summary: string[]; notes: strin
 		return;
 	}
 	const lines: HTMLElement[] = [];
-	// 汇总信息区
+	// Summary section
 	const summary = document.createElement('div');
 	summary.className = 'ctg-export-summary';
 	summary.style.display = 'flex';
@@ -907,7 +918,7 @@ function showExportResult(opts: { title: string; summary: string[]; notes: strin
 		summary.appendChild(p);
 	}
 	lines.push(summary);
-	// 每条警告一个独立显示框
+	// Each warning in its own box
 	for (const note of opts.notes) {
 		const box = document.createElement('div');
 		box.className = 'ctg-export-warning';
@@ -933,7 +944,7 @@ function showExportResult(opts: { title: string; summary: string[]; notes: strin
 	} as DialogOptions).show();
 }
 
-/** 导出主流程：找大组 → 收集纹理 → 大对话框（模式/命名空间/id/路径）→ 写文件 → 汇总 */
+/** Export main flow: find the track group → collect textures → large dialog (mode/namespace/id/paths) → write files → summary */
 export async function runTrackExport(): Promise<void> {
 	const trackGroup = findTrackGroup();
 	if (!trackGroup) {
@@ -948,7 +959,7 @@ export async function runTrackExport(): Promise<void> {
 	}
 	const defaultTrackId = (Project as any).name || 'track';
 	const subgroups = (trackGroup.children ?? []).filter((g) => g instanceof Group) as Group[];
-	// 先收集纹理：导出对话框需要列出每张纹理的目录
+	// Collect textures first: the export dialog needs to list each texture's directory
 	const { infos: texInfos, keyOf } = collectTexturesGlobal(subgroups);
 	const options = await promptExportOptions(defaultTrackId, texInfos);
 	if (!options) {
@@ -963,7 +974,7 @@ export async function runTrackExport(): Promise<void> {
 			options.mode !== 'bedrock' && format && format !== 'java_block' && format !== 'java_item'
 				? t('ctg.export.format_note', format)
 				: '';
-		// 去重的纹理资源路径（可能有差异）
+		// Deduplicated texture resource paths (they may differ)
 		const distinctTexturePaths = [...new Set(Object.values(options.texturePaths))];
 		showExportResult({
 			title: t('ctg.export.done_title'),

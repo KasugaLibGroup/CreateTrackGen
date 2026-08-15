@@ -5,3 +5,4 @@ node_modules/
 
 # Wiki — managed as a separate repo (clone of KasugaLibGroup/CreateTrackGen.wiki)
 wiki/
+release/

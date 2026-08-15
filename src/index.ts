@@ -33,10 +33,10 @@ registerPlugin('create_track_gen', {
 	author: 'KasugaLib Group',
 	description: t('ctg.plugin.description'),
 	about: t('ctg.plugin.about'),
-	icon: 'train',
+	icon: 'icon.png',
 	version: '0.2.0',
 	variant: 'both',
-	tags: ['Minecraft: Java Edition'],
+	tags: ['Minecraft: Java Edition', 'Exporter', 'Utility'],
 	onload() {
 		// Prefer reading lang/*.json from the plugin directory (translation edits need no rebuild);
 		// falls back to the built-in defaults when missing

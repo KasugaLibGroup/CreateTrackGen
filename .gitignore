@@ -2,3 +2,6 @@ node_modules/
 *.log
 .DS_Store
 .idea/
+
+# Wiki — managed as a separate repo (clone of KasugaLibGroup/CreateTrackGen.wiki)
+wiki/

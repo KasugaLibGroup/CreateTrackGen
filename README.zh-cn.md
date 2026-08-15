@@ -1,17 +1,16 @@
 # Create Track Gen — 机械动力轨道生成插件
 
-[![BlockBench](/plugin_title.png)]([./LICENSE](https://www.blockbench.net/wiki/docs/plugin/))
+[![Title](/plugin_title.png)]()
 
+[![Wiki](https://img.shields.io/badge/CTG-百科-red)](https://github.com/KasugaLibGroup/CreateTrackGen/wiki)
 [![MIT License](https://img.shields.io/badge/License-MIT-blue)](./LICENSE)
 [![README ZH-CN](https://img.shields.io/badge/Readme-English-green)](./README.md)
-[![BlockBench](https://img.shields.io/badge/Blockbench-Model-yellow)]([./LICENSE](https://www.blockbench.net/wiki/docs/plugin/))
+[![BlockBench](https://img.shields.io/badge/Blockbench-Model-yellow)](https://www.blockbench.net/wiki/docs/plugin/)
 
 Blockbench 插件：根据玩家提供的 **左轨 / 右轨 / 枕木** 三个零件模型，输入轨距、轨道高度与整体 Y 偏移，
 自动生成符合机械动力（Create Mod）轨道规范的 **9 种形状**（直轨 / 45° 斜轨 / 上升 / 传送门 / 4 种交叉；`z_ortho` / `ascending_n/e/w` / `teleport_x` / `cross_d1_zo` / `cross_d2_zo` 不单独生成，方向由 blockstates 的 `y` 旋转表达），
 并把玩家输入的轨距换算成 Create 用于计算弯道的**比例常数**（二次拟合曲线）。
 可选分别导入两张传送门纹理（`portal_track.png` / `portal_track_mip.png`）：`portal_track` 铺轨道/枕木（缺省用零件默认纹理）；`portal_track_mip` 生成左右两个覆层块 `teleport_left` / `teleport_right` 把枕木左/右半边包住（不包含钢轨）并贴 mip（缺省不生成）。两者都缺省时传送门轨道与 `z_ortho` / `x_ortho` 一致（结构参照 Create 原版 `teleport.json`）。
-
-> 源码接口文档（中英两版）见 [`docs/`](docs/)。
 
 ## 功能
 

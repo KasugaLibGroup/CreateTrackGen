@@ -1,4 +1,10 @@
-# create_track_gen — 机械动力轨道生成插件
+# Create Track Gen — 机械动力轨道生成插件
+
+[![BlockBench](/plugin_title.png)]([./LICENSE](https://www.blockbench.net/wiki/docs/plugin/))
+
+[![MIT License](https://img.shields.io/badge/License-MIT-blue)](./LICENSE)
+[![README ZH-CN](https://img.shields.io/badge/License-English-green)](./README.md)
+[![BlockBench](https://img.shields.io/badge/Blockbench-Model-yellow)]([./LICENSE](https://www.blockbench.net/wiki/docs/plugin/))
 
 Blockbench 插件：根据玩家提供的 **左轨 / 右轨 / 枕木** 三个零件模型，输入轨距、轨道高度与整体 Y 偏移，
 自动生成符合机械动力（Create Mod）轨道规范的 **9 种形状**（直轨 / 45° 斜轨 / 上升 / 传送门 / 4 种交叉；`z_ortho` / `ascending_n/e/w` / `teleport_x` / `cross_d1_zo` / `cross_d2_zo` 不单独生成，方向由 blockstates 的 `y` 旋转表达），

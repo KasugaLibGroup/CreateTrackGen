@@ -5,7 +5,7 @@ A Blockbench plugin that generates Create Mod track model sets from three part m
 producing the 9 track shapes and exporting them in 4 modes.
 
 This document covers only the **exported API** of the source (types, constants, functions).
-For usage instructions see `README.md`.
+For usage instructions see `../../README.zh-cn.md`.
 
 > **Note on this English reference:** entries whose behavior is fully inferable from the
 > symbol name alone are omitted for brevity (e.g. unit-conversion helpers). The complete

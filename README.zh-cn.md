@@ -5,6 +5,8 @@ Blockbench 插件：根据玩家提供的 **左轨 / 右轨 / 枕木** 三个零
 并把玩家输入的轨距换算成 Create 用于计算弯道的**比例常数**（二次拟合曲线）。
 可选分别导入两张传送门纹理（`portal_track.png` / `portal_track_mip.png`）：`portal_track` 铺轨道/枕木（缺省用零件默认纹理）；`portal_track_mip` 生成左右两个覆层块 `teleport_left` / `teleport_right` 把枕木左/右半边包住（不包含钢轨）并贴 mip（缺省不生成）。两者都缺省时传送门轨道与 `z_ortho` / `x_ortho` 一致（结构参照 Create 原版 `teleport.json`）。
 
+> 源码接口文档（中英两版）见 [`docs/`](docs/)。
+
 ## 功能
 
 - **生成轨道模型组**：`工具 → 机械动力轨道生成`
@@ -24,7 +26,7 @@ Blockbench 插件：根据玩家提供的 **左轨 / 右轨 / 枕木** 三个零
   - **全部导出为 OBJ**
   - 把当前工作区「机械动力轨道」大组下的各分组，按所选模式导出 + **blockstates** + 纹理 PNG，写到用户指定文件夹
   - 模型：`models/block/track/{轨道id}/{形状}.json`（`x_ortho / diag / diag_2 / ascending / teleport / cross_ortho / cross_diag / cross_d1_xo / cross_d2_xo / tie / segment_left / segment_right`，共 12 个；`z_ortho` 由 `x_ortho` 旋转 90° 表达、`cross_d1_zo` / `cross_d2_zo` 由 `cross_d1_xo` / `cross_d2_xo` 旋转表达；`ascending` 只导出南向变体、`teleport` 只导出 Z 向，其余方向由 blockstates 的 `y` 旋转表达，与 Create/Kuayue 一致）
-  - blockstates：`blockstates/track_and_bogey/{轨道id}_track.json`（shape × turn × waterlogged 共 76 个变体，模型引用 `{命名空间}:block/track/{轨道id}/…`；`shape=zo → x_ortho y:90`，`cr_pdx → cross_d1_xo y:90`、`cr_pdz → cross_d2_xo y:180`、`cr_ndx → cross_d2_xo y:270`、`cr_ndz → cross_d1_xo`，与参考 Kuayue meter/guard blockstates 一致）
+  - blockstates：`blockstates/{轨道id}_track.json`（MC 要求直接罗列在 `blockstates/` 下；shape × turn × waterlogged 共 76 个变体，模型引用 `{命名空间}:block/track/{轨道id}/…`；`shape=zo → x_ortho y:90`，`cr_pdx → cross_d1_xo y:90`、`cr_pdz → cross_d2_xo y:180`、`cr_ndx → cross_d2_xo y:270`、`cr_ndz → cross_d1_xo`，与参考 Kuayue meter/guard blockstates 一致）
   - 纹理：`textures/block/track/{轨道id}/{资源名}.png`（按源纹理文件名去重导出；基岩版模式写 `textures/blocks/{轨道id}/`）
   - 导出时弹出配置对话框：**导出模式**（默认经典 Java）+ **命名空间**（默认 `kuayue`）+ **轨道 id**（默认工作区名）；随后选目标文件夹（首次访问会请求「文件夹访问」权限）
   - 导出完成后弹出**加宽的汇总对话框**（640px）：汇总信息 + 每条警告/提示各自独立的显示框，文字完整显示
@@ -54,12 +56,14 @@ Blockbench 插件：根据玩家提供的 **左轨 / 右轨 / 枕木** 三个零
 
 ```
 create_track_gen/
+├── docs/                  # ★ 接口文档（中文 / English 两版，docs/zh + docs/en）
 ├── src/
 │   ├── index.ts           # 插件入口：Plugin.register + 菜单 + Undo 事务 + onunload 清理
-│   ├── constants.ts       # 轨距换算锚点、默认参数
+│   ├── plugin_api.ts      # Plugin.register 的类型安全封装
+│   ├── i18n.ts            # 国际化：t() + registerTranslations + loadTranslationsFromDisk
 │   ├── logic/             # ★ 纯逻辑层（零 Blockbench 依赖，Node 可单测）
 │   │   ├── types.ts       # CubeSpec / ShapeSpec / TrackConfig 纯类型
-│   │   ├── gauge.ts       # 轨距二次拟合 + mm↔px 换算
+│   │   ├── gauge.ts       # 轨距二次拟合 + mm↔px↔inch 换算
 │   │   ├── parts.ts       # .bbmodel 解析 + 归一化（底面 y=0、中线 x=0）
 │   │   ├── transform.ts   # 平移 / 抬升 / 绕 Y/X 旋转（纯函数）
 │   │   ├── generator.ts   # 9 种形状组装（核心）
@@ -70,9 +74,12 @@ create_track_gen/
 │   │   └── export.ts      # 导出轨道模型（分组 → Minecraft JSON + blockstates + 纹理 PNG）
 │   └── ui/
 │       ├── import.ts      # 磁盘导入 .bbmodel / 选择一个标签页提取选中元素
-│       └── dialog.ts      # 单页配置对话框（零件来源 + 参数 + 传送门纹理）
+│       ├── dialog.ts      # 单页配置对话框（零件来源 + 参数 + 传送门纹理）
+│       └── gauge.ts       # 轨距换算对话框
 ├── build.mjs              # esbuild 打包（插件 IIFE + logic CJS 次产物）
 ├── create_track_gen.js    # 构建产物，拖进 Blockbench 即可加载
+├── README.md              # 中文说明
+├── README.en.md           # English readme
 ├── test/
 │   ├── logic.test.js      # 纯逻辑单测（轨距/解析/变换/组装）
 │   ├── smoke.js           # 冒烟测试（桩 Blockbench API 跑产物）

@@ -1,6 +1,6 @@
 {
   "name": "create_track_gen",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Blockbench 插件：自动生成机械动力（Create Mod）轨道模型",
   "main": "create_track_gen.js",
   "scripts": {

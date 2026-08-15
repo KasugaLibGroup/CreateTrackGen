@@ -3,7 +3,7 @@
 [![BlockBench](/plugin_title.png)]([./LICENSE](https://www.blockbench.net/wiki/docs/plugin/))
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue)](./LICENSE)
-[![README ZH-CN](https://img.shields.io/badge/License-English-green)](./README.md)
+[![README ZH-CN](https://img.shields.io/badge/Readme-English-green)](./README.md)
 [![BlockBench](https://img.shields.io/badge/Blockbench-Model-yellow)]([./LICENSE](https://www.blockbench.net/wiki/docs/plugin/))
 
 Blockbench 插件：根据玩家提供的 **左轨 / 右轨 / 枕木** 三个零件模型，输入轨距、轨道高度与整体 Y 偏移，

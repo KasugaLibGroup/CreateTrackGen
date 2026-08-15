@@ -3,7 +3,7 @@
 [![BlockBench](/plugin_title.png)]([./LICENSE](https://www.blockbench.net/wiki/docs/plugin/))
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue)](./LICENSE)
-[![README ZH-CN](https://img.shields.io/badge/License-中文-green)](./README.zh-cn.md)
+[![README ZH-CN](https://img.shields.io/badge/Readme-中文-green)](./README.zh-cn.md)
 [![BlockBench](https://img.shields.io/badge/Blockbench-Model-yellow)]([./LICENSE](https://www.blockbench.net/wiki/docs/plugin/))
 
 A Blockbench plugin that takes the **left rail / right rail / tie** part models, plus track gauge,

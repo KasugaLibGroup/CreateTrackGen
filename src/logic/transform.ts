@@ -68,8 +68,73 @@ export function lift(cubes: CubeSpec[], dy: number): CubeSpec[] {
 	return translate(cubes, [0, dy, 0]);
 }
 
+/** Deep-copies a MeshSpec (vertices/faces/origin/rotation), avoiding pollution of the original parts */
+export function cloneMesh(mesh: MeshSpec): MeshSpec {
+	return {
+		...mesh,
+		vertices: Object.fromEntries(Object.entries(mesh.vertices).map(([k, v]) => [k, [...v] as Vec3])),
+		faces: Object.fromEntries(
+			Object.entries(mesh.faces).map(([k, f]) => [
+				k,
+				{
+					...f,
+					vertices: f.vertices ? [...f.vertices] : f.vertices,
+					uv: f.uv && typeof f.uv === 'object' && !Array.isArray(f.uv) ? Object.fromEntries(Object.entries(f.uv).map(([uk, uv]) => [uk, [...uv]])) : f.uv,
+				},
+			])
+		),
+		origin: mesh.origin ? ([...mesh.origin] as Vec3) : undefined,
+		rotation: mesh.rotation ? ([...mesh.rotation] as Vec3) : undefined,
+	};
+}
+
+/** Shifts a mesh's vertices and origin by the given offset (keeps cube↔mesh relative positions) */
+export function translateMesh(mesh: MeshSpec, offset: Vec3): MeshSpec {
+	const [dx, dy, dz] = offset;
+	return {
+		...mesh,
+		origin: mesh.origin ? [mesh.origin[0] + dx, mesh.origin[1] + dy, mesh.origin[2] + dz] as Vec3 : mesh.origin,
+		vertices: Object.fromEntries(
+			Object.entries(mesh.vertices).map(([k, v]) => [k, [v[0] + dx, v[1] + dy, v[2] + dz] as Vec3])
+		),
+	};
+}
+
+export function liftMesh(mesh: MeshSpec, dy: number): MeshSpec {
+	return translateMesh(mesh, [0, dy, 0]);
+}
+
 /**
- * Per-axis vector rotation (degrees), matching the Minecraft/Blockbench Cube.rotation convention.
+ * Rotates a mesh's vertices about a pivot, baking the rotation into the vertex positions (origin cleared).
+ *
+ * Blockbench renders a mesh as `position = origin` + `R(rotation)·vertices`, which differs from the
+ * cube convention (Minecraft rotates a cube about its origin with an implicit `−origin`). So the shape
+ * rotation (e.g. diagonal's +45° about the group center) cannot be expressed via the mesh's rotation
+ * field with world-space vertices — it must be baked: `world' = pivot + R(rot)·(world − pivot)`.
+ * A proper rotation preserves face winding (normals stay outward) and keeps per-vertex UV glued.
+ */
+export function rotateMesh(mesh: MeshSpec, rot: Vec3, pivot: Vec3): MeshSpec {
+	const vertices: Record<string, Vec3> = {};
+	for (const [k, v] of Object.entries(mesh.vertices)) {
+		const rel: Vec3 = [v[0] - pivot[0], v[1] - pivot[1], v[2] - pivot[2]];
+		const r = rotateVec(rel, rot);
+		vertices[k] = [r[0] + pivot[0], r[1] + pivot[1], r[2] + pivot[2]] as Vec3;
+	}
+	return { ...mesh, vertices, origin: undefined, rotation: undefined };
+}
+
+/**
+ * Per-axis vector rotation (degrees). X and Z match the standard right-hand rule AND the
+ * Minecraft/Blockbench Cube.rotation convention; Y is the REVERSE of Cube.rotation's Y direction.
+ *
+ * Concretely: this rotY(+90) maps +Z → −X, while Blockbench/Minecraft render a Cube.rotation [0,+90,0]
+ * as +Z → +X (standard R_y). The discrepancy is invisible for 90°-multiple Y rotations (they differ by
+ * R_y(180), and an axis-aligned box is unchanged) — which is why the bake path and the tie-turning
+ * (bakeRotateY90 / orientTieMeshPerpendicular) look right — but it FLIPS the ±45° diagonals.
+ *
+ * Shape mesh placement therefore NEGATES the Y angle when baking the same rotation the cubes express
+ * via their rotation field (see straight/diagonal/cross/ascending in generator.ts). Do NOT "fix" rotY
+ * to the standard direction: it would silently break the bakes/tests that depend on this convention.
  * The Y rotation was verified against test_rail's [0,-90,0] (-90 turns an X-spanning box along Z).
  */
 function rotX(v: Vec3, deg: number): Vec3 {

@@ -70,23 +70,154 @@ global.Cube = class Cube {
 	}
 };
 
+// Array.prototype.replace — Blockbench 扩展（splice 原位替换），MeshFace 的 extend 依赖它
+if (!Array.prototype.replace) {
+	Object.defineProperty(Array.prototype, 'replace', {
+		value: function (items) {
+			this.splice(0, this.length, ...items);
+			return this;
+		},
+		writable: true,
+	});
+}
+// MeshFace 桩：忠实复刻 Blockbench 的 MeshFace（extend 按顶点 key 过滤 + 默认 uv + 替换 uv）
+global.MeshFace = class MeshFace {
+	constructor(mesh, data) {
+		this.mesh = mesh;
+		this.uv = {};
+		this.texture = false;
+		this.vertices = [];
+		this.rotation = 0;
+		this.element = mesh;
+		if (data) this.extend(data);
+	}
+	extend(data) {
+		if (data.vertices !== undefined) this.vertices.replace(data.vertices);
+		if (data.rotation !== undefined) this.rotation = data.rotation;
+		if (data.texture === null) this.texture = null;
+		else if (data.texture === false) this.texture = false;
+		else if (data.texture && data.texture.uuid) this.texture = data.texture.uuid;
+		else if (typeof data.texture === 'string') this.texture = data.texture;
+		for (let i = this.vertices.length - 1; i >= 0; i--) {
+			const key = this.vertices[i];
+			if (typeof key != 'string' || !key.length) {
+				this.vertices.splice(i, 1);
+				delete this.uv[key];
+				continue;
+			}
+			if (!this.uv[key]) this.uv[key] = [0, 0];
+			if (data.uv && data.uv[key] instanceof Array) this.uv[key].replace(data.uv[key]);
+		}
+		for (let key in this.uv) {
+			if (!this.vertices.includes(key)) delete this.uv[key];
+		}
+		return this;
+	}
+	getSaveCopy() {
+		return { vertices: this.vertices.slice(), uv: this.uv, rotation: this.rotation, texture: this.texture };
+	}
+};
+// Mesh 桩：忠实复刻 Blockbench 的 Mesh 元素。官方建 mesh 的姿势是 new Mesh({name, vertices:{}})
+// + addVertices() + addFaces(new MeshFace(...))（与 OBJ 导入器一致）；直接往构造函数传
+// vertices/faces 是非官方用法。vertices/faces 走 _static.properties（与真实一致）。
 global.Mesh = class Mesh {
-	constructor(opts) {
-		this.opts = opts;
-		this.name = opts?.name ?? '';
+	constructor(opts, uuid) {
+		this.uuid = uuid || 'mesh-' + createdMeshes.length;
+		this.name = opts?.name ?? 'mesh';
 		this.type = 'mesh';
-		this.vertices = opts?.vertices ?? {};
-		this.faces = opts?.faces ?? {};
-		this.origin = opts?.origin;
-		this.rotation = opts?.rotation;
+		this.origin = opts?.origin ? [...opts.origin] : [0, 0, 0];
+		this.rotation = opts?.rotation ? [...opts.rotation] : [0, 0, 0];
+		this.shading = opts?.shading ?? 'flat';
+		this.visibility = opts?.visibility ?? true;
 		this.children = [];
+		this.parent = 'root';
 		this.deleted = false;
+		this._static = { properties: { vertices: {}, faces: {}, seams: {} } };
+		// 忠实复刻：无 vertices 时 Mesh 构造器会塞一个默认 2×2×2 方块（东/西/上/下/南/北 6 面）
+		if (!opts || !opts.vertices) {
+			this.addVertices([2, 4, 2], [2, 4, -2], [2, 0, 2], [2, 0, -2], [-2, 4, 2], [-2, 4, -2], [-2, 0, 2], [-2, 0, -2]);
+			const keys = Object.keys(this.vertices);
+			[
+				[keys[0], keys[2], keys[1], keys[3]],
+				[keys[4], keys[5], keys[6], keys[7]],
+				[keys[0], keys[1], keys[4], keys[5]],
+				[keys[2], keys[6], keys[3], keys[7]],
+				[keys[0], keys[4], keys[2], keys[6]],
+				[keys[1], keys[3], keys[5], keys[7]],
+			].forEach((v, i) => {
+				const face = new global.MeshFace(this, { vertices: v });
+				face.uv[v[0]] = [0, 0];
+				face.uv[v[1]] = [0, 16];
+				face.uv[v[2]] = [16, 0];
+				face.uv[v[3]] = [16, 16];
+				this.addFaces(face);
+			});
+		}
+		if (opts && typeof opts === 'object') this.extend(opts);
 		createdMeshes.push(this);
+	}
+	get vertices() {
+		return this._static.properties.vertices;
+	}
+	set vertices(v) {
+		this._static.properties.vertices = v;
+	}
+	get faces() {
+		return this._static.properties.faces;
+	}
+	set faces(v) {
+		this._static.properties.faces = v;
+	}
+	extend(object) {
+		if (object.name) this.name = object.name;
+		if (object.origin) this.origin = object.origin.slice();
+		if (object.rotation) this.rotation = object.rotation.slice();
+		if (typeof object.vertices == 'object') {
+			for (let key in this.vertices) {
+				if (!object.vertices[key]) delete this.vertices[key];
+			}
+			if (object.vertices instanceof Array) {
+				object.vertices.forEach((v) => {
+					const key = 'v' + Object.keys(this.vertices).length;
+					this.vertices[key] = [v[0] || 0, v[1] || 0, v[2] || 0];
+				});
+			} else {
+				for (let key in object.vertices) {
+					if (!this.vertices[key]) this.vertices[key] = [];
+					this.vertices[key].replace(object.vertices[key]);
+				}
+			}
+		}
+		if (typeof object.faces == 'object') {
+			for (let key in this.faces) {
+				if (!object.faces[key]) delete this.faces[key];
+			}
+			for (let key in object.faces) {
+				if (this.faces[key]) this.faces[key].extend(object.faces[key]);
+				else this.faces[key] = new global.MeshFace(this, object.faces[key]);
+			}
+		}
+		return this;
+	}
+	addVertices(...vectors) {
+		return vectors.map((vector) => {
+			const key = 'v' + Object.keys(this.vertices).length;
+			this.vertices[key] = [vector[0] || 0, vector[1] || 0, vector[2] || 0];
+			return key;
+		});
+	}
+	addFaces(...faces) {
+		return faces.map((face, i) => {
+			const key = 'f' + i;
+			this.faces[key] = face;
+			return key;
+		});
 	}
 	init() {
 		return this;
 	}
 	addTo(parent) {
+		this.parent = parent;
 		parent.children.push(this);
 		return this;
 	}
@@ -94,14 +225,10 @@ global.Mesh = class Mesh {
 		this.deleted = true;
 	}
 	getSaveCopy() {
-		return {
-			name: this.name,
-			type: 'mesh',
-			vertices: this.vertices,
-			faces: this.faces,
-			origin: this.origin,
-			rotation: this.rotation,
-		};
+		const el = { vertices: {}, faces: {}, type: 'mesh', origin: this.origin, rotation: this.rotation, name: this.name };
+		for (let key in this.vertices) el.vertices[key] = this.vertices[key].slice();
+		for (let key in this.faces) el.faces[key] = this.faces[key].getSaveCopy();
+		return el;
 	}
 };
 
@@ -189,7 +316,7 @@ const tiePartJson = {
 // 必须烘焙进顶点，否则平移会双重位移导致轨道中心偏到 x=8。
 // 局部顶点 x[-8,8]、y[-8,-2]、z[0,16] → 世界 x[0,16]、y[0,6]、z[8,24]（中心 x=8）。
 const meshPartJson = {
-	meta: { model_format: 'generic' },
+	meta: { model_format: 'free' },
 	resolution: { width: 32, height: 32 },
 	textures: [{ name: 'mesh.png', id: '1', uv_width: 32, uv_height: 32, source: 'data:image/png;base64,mesh' }],
 	elements: [
@@ -199,7 +326,9 @@ const meshPartJson = {
 			vertices: { '0': [-8, -8, 0], '1': [8, -8, 0], '2': [8, -2, 0], '3': [-8, -2, 0], '4': [-8, -8, 16], '5': [8, -8, 16], '6': [8, -2, 16], '7': [-8, -2, 16] },
 			origin: [8, 8, 8],
 			rotation: [0, 0, 0],
-			faces: { '0': { vertices: ['0', '1', '2', '3'], texture: 0 } },
+			// uv 带逐顶点坐标（与真实 .bbmodel 的 mesh 面一致）：specToMesh 必须把 uv 从源顶点 key
+			// 重映射到 addVertices 分配的新 key，否则 MeshFace 逐顶点查找全部落空 → 退回 [0,0]
+			faces: { '0': { vertices: ['0', '1', '2', '3'], texture: 0, uv: { '0': [0, 0], '1': [8, 0], '2': [8, 4], '3': [0, 4] } } },
 		},
 	],
 };
@@ -275,9 +404,24 @@ global.Project = {
 };
 
 // 生成流程用到的全局：新建工作区 + 纹理
+// 与真实 Blockbench 一致：newProject 把格式 id 字符串解析成 Formats 注册表里的格式对象，
+// 找不到时回退到自由模型（Formats.free）。插件传入的格式串必须真实有效，否则这里会暴露出来
+// （例如旧代码传 'generic' —— 那不是有效 id，会解析成自由模型而非字面记录）。
+const _bbFormats = {
+	free: { id: 'free', name: '自由模型', meshes: true },
+	java_block: { id: 'java_block', name: 'Java 方块', meshes: false },
+	java_item: { id: 'java_item', name: 'Java 物品', meshes: false },
+};
+global.Formats = _bbFormats;
 global.newProject = (format) => {
 	// 记录新工作区格式（buildAllShapes / buildBaseParts 按 Project.format 计算输出偏移）
-	const id = typeof format === 'string' ? format : (format && format.id) || 'java_block';
+	const resolved =
+		typeof format === 'string'
+			? _bbFormats[format] ?? _bbFormats.free
+			: format && format.id
+				? format
+				: _bbFormats.free;
+	const id = resolved.id;
 	Project.format = { id };
 	return true;
 };
@@ -584,7 +728,7 @@ console.log('   轨距换算 → 英寸/毫米/像素联动 + 只读输出值 �
 	assert.notStrictEqual(retC, false, '❌ mesh 零件生成不应被阻止');
 	await c;
 	// 含 mesh → 自由模型
-	assert.strictEqual(Project.format.id, 'generic', '❌ 含 mesh 零件的新工作区应为自由模型');
+	assert.strictEqual(Project.format.id, 'free', '❌ 含 mesh 零件的新工作区应为自由模型');
 	assert.strictEqual(Project.name, 'mesh轨道', '❌ 场景 C 新工作区名应取自用户输入');
 	// 基础分组存在且含 mesh 元素（只看本次生成新建的分组）
 	const baseGroupsC = createdGroups
@@ -600,9 +744,45 @@ console.log('   轨距换算 → 英寸/毫米/像素联动 + 只读输出值 �
 	const xs = (m) => (Math.min(...Object.values(m.vertices).map((v) => v[0])) + Math.max(...Object.values(m.vertices).map((v) => v[0]))) / 2;
 	assert.strictEqual(xs(meshOf('segment_left')), 0, '❌ 场景 C 左轨 mesh 顶点 x 中线应为 0');
 	assert.strictEqual(xs(meshOf('segment_right')), 0, '❌ 场景 C 右轨 mesh 顶点 x 中线应为 0');
+	// 无默认 2×2×2 方块：mesh 顶点数必须恰好等于源 mesh 的顶点数（8），不能是 8+8=16
+	for (const name of ['segment_left', 'segment_right', 'tie']) {
+		const m = meshOf(name);
+		assert.strictEqual(
+			Object.keys(m.vertices).length,
+			8,
+			`❌ 场景 C ${name} mesh 顶点数应为源 mesh 的 8 个（不应混入默认 2×2×2 方块）`
+		);
+		assert.strictEqual(
+			Object.keys(m.faces).length,
+			1,
+			`❌ 场景 C ${name} mesh 面数应为源 mesh 的 1 个（不应混入默认方块 6 面）`
+		);
+	}
+	// 9 个方向形状也应含 mesh（零件 mesh 几何被变换放进每个形状分组，不再只进基础分组）
+	const shapeNames = ['x_ortho', 'diag', 'diag_2', 'ascending_south', 'teleport', 'cross_ortho', 'cross_diag', 'cross_d1_xo', 'cross_d2_xo'];
+	const cParent = createdGroups.find((g) => g.name === Project.name);
+	assert(cParent, '❌ 场景 C 应有轨道大组');
+	for (const sn of shapeNames) {
+		const sg = cParent.children.find((ch) => ch instanceof global.Group && ch.name.startsWith(sn));
+		assert(sg, `❌ 场景 C 应有形状分组 ${sn}`);
+		const hasMeshChild = sg.children.some((ch) => ch instanceof global.Mesh);
+		assert(hasMeshChild, `❌ 场景 C 形状分组 ${sn} 应含 mesh（零件 mesh 几何要出现在每个方向形状里）`);
+	}
+	// 方向形状的 mesh 顶点数同样不能混入默认 2×2×2 方块（源 mesh 8 顶点 → 每个形状 mesh 也应 8 顶点）
+	const firstShape = cParent.children.find((ch) => ch instanceof global.Group && ch.name.startsWith('x_ortho'));
+	const firstShapeMesh = firstShape.children.find((ch) => ch instanceof global.Mesh);
+	assert.strictEqual(Object.keys(firstShapeMesh.vertices).length, 8, '❌ 场景 C 方向形状 mesh 不应混入默认 2×2×2 方块');
+	// mesh 面 uv 应保留源模型的逐顶点 uv：addVertices 重分配顶点 key 后 face.uv 必须跟着重映射，
+	// 否则 MeshFace 逐顶点查找全部落空退回 [0,0]，整张 mesh 糊到纹理左上角
+	const firstFace = Object.values(firstShapeMesh.faces)[0];
+	const uvValues = Object.values(firstFace.uv ?? {});
+	assert.strictEqual(uvValues.length, 4, `❌ 场景 C mesh 面应有 4 个逐顶点 uv，实际 ${JSON.stringify(firstFace.uv)}`);
+	const flatUv = uvValues.flat();
+	assert(flatUv.includes(8), `❌ 场景 C mesh 面 uv 应保留源模型的 [8,0]/[8,4] 值，实际 ${JSON.stringify(firstFace.uv)}`);
+	assert(flatUv.some((v) => v === 4), `❌ 场景 C mesh 面 uv 应保留源模型的 v=4 值，实际 ${JSON.stringify(firstFace.uv)}`);
 	assert(createdMeshes.length > 0, '❌ 应创建 Mesh 元素');
 	meshImport = false;
-	console.log('   零件含 mesh 组 → 新工作区为自由模型，基础分组含 mesh ✓');
+	console.log('   零件含 mesh 组 → 新工作区为自由模型，基础分组 + 9 个方向形状都含 mesh ✓');
 
 	// ── 场景 D：导出轨道模型（Create/Kuayue 命名规范 + blockstates）──
 	// 场景 A 生成的轨道大组（parentGroup）仍可引用；

@@ -127,6 +127,12 @@ export interface ShapeSpec {
 	/** Display name (Group name) */
 	name: string;
 	cubes: CubeSpec[];
+	/**
+	 * Mesh geometry contributed by the input parts, placed/rotated like the cubes so mesh-only parts
+	 * (e.g. OBJ rail/tie imports) also appear in every directional shape — not just the base groups.
+	 * Vertex coordinates are world-space (baked origin/rotation like the part meshes).
+	 */
+	meshes?: MeshSpec[];
 }
 
 /** All inputs needed to generate the track. */

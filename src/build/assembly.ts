@@ -5,7 +5,7 @@
  */
 
 import { computeBBox, outputOffsetForFormat } from '../logic/parts';
-import { bakePartAxisAligned, translate } from '../logic/transform';
+import { bakePartAxisAligned, translate, translateMesh } from '../logic/transform';
 import { orientTiePerpendicular } from '../logic/generator';
 import type { CubeSpec, MeshSpec, PartModel, ShapeSpec, TrackConfig, Vec3 } from '../logic/types';
 
@@ -42,9 +42,10 @@ function specToCube(spec: CubeSpec, textureByKey?: Map<string, Texture>): Cube {
 }
 
 /**
- * Attaches all of a shape's Cubes to the given Group. When offset is non-zero, the origin-centered
- * geometry is translated to the canvas symmetry point (Java canvas center (8,8)), so the exported
- * model's symmetry axis is correct (inverse of the import normalization).
+ * Attaches all of a shape's Cubes (and mesh groups, when the parts carry any) to the given Group. When
+ * offset is non-zero, the origin-centered geometry is translated to the canvas symmetry point (Java
+ * canvas center (8,8)), so the exported model's symmetry axis is correct (inverse of the import
+ * normalization).
  */
 function appendShape(group: Group, shape: ShapeSpec, offset: Vec3 = [0, 0, 0], textureByKey?: Map<string, Texture>): Cube[] {
 	const cubes: Cube[] = [];
@@ -54,49 +55,59 @@ function appendShape(group: Group, shape: ShapeSpec, offset: Vec3 = [0, 0, 0], t
 		cube.addTo(group);
 		cubes.push(cube);
 	}
+	for (const mesh of shape.meshes ?? []) {
+		const m = offset[0] === 0 && offset[1] === 0 && offset[2] === 0 ? mesh : translateMesh(mesh, offset);
+		specToMesh(m, textureByKey).init().addTo(group);
+	}
 	return cubes;
 }
 
-/** Translates a mesh: vertices and origin shifted together by the given offset */
-function translateMesh(mesh: MeshSpec, offset: Vec3): MeshSpec {
-	const [dx, dy, dz] = offset;
-	return {
-		...mesh,
-		origin: mesh.origin ? [mesh.origin[0] + dx, mesh.origin[1] + dy, mesh.origin[2] + dz] as Vec3 : mesh.origin,
-		vertices: Object.fromEntries(
-			Object.entries(mesh.vertices).map(([k, v]) => [k, [v[0] + dx, v[1] + dy, v[2] + dz] as Vec3])
-		),
-	};
-}
-
 /**
- * Single MeshSpec → Blockbench Mesh. Faces are passed through (vertices / uv / rotation); face source
- * texture keys are resolved to the Texture imported into the new workspace. Used to move the input
- * parts' mesh groups into the new workspace's base groups (tie / segment_left / segment_right).
+ * Single MeshSpec → Blockbench Mesh, built through the official Mesh API — the same pattern as
+ * Blockbench's own OBJ importer: `new Mesh({name, vertices:{}})` + `addVertices(...)` +
+ * `addFaces(new MeshFace(mesh, {...}))`. (The Mesh constructor's documented options have no `faces`
+ * field; passing populated vertices/faces directly is not the supported API.) Face source texture keys
+ * are resolved to the Texture imported into the new workspace. Used to move the input parts' mesh
+ * groups into the new workspace's base groups (tie / segment_left / segment_right).
  */
 function specToMesh(spec: MeshSpec, textureByKey?: Map<string, Texture>): Mesh {
-	const faces: any = {};
+	// vertices:{} is required — without it the Mesh constructor falls back to a default 2×2×2 cube
+	// (Blockbench's own OBJ importer always passes an empty vertices object for this reason)
+	const mesh = new Mesh({ name: spec.name, vertices: {} });
+	// addVertices assigns fresh random vertex keys; keep the source key → new key map so the faces can
+	// reference the vertices they belong to
+	const vertexKeyMap = new Map<string, string>();
+	for (const [vkey, v] of Object.entries(spec.vertices)) {
+		vertexKeyMap.set(vkey, mesh.addVertices(v)[0]);
+	}
 	for (const [id, f] of Object.entries(spec.faces)) {
 		if (!f) continue;
-		const face: any = {};
-		if (f.vertices?.length) face.vertices = [...f.vertices];
-		if (f.uv) face.uv = f.uv;
-		if (f.rotation) face.rotation = f.rotation;
-		if (f.texture && textureByKey) {
-			const tex = textureByKey.get(f.texture);
-			if (tex) face.texture = tex;
+		const tex = f.texture && textureByKey ? textureByKey.get(f.texture) : undefined;
+		// Object-form per-vertex UV ({vkey: [u,v]}), the format MeshFace expects (mesh faces
+		// have no rotation property — that's Cube/Billboard faces only).
+		// CRITICAL: addVertices above assigned fresh vertex keys (v0, v1, …); the face's uv object is
+		// keyed by the SOURCE vertex keys, so it must be remapped to the new keys. Otherwise MeshFace's
+		// per-vertex lookup (data.uv[vertexKey]) misses every entry and every vertex falls back to
+		// uv [0,0] — the whole mesh texture smears to the top-left pixel.
+		let uv: any = f.uv;
+		if (uv && typeof uv === 'object' && !Array.isArray(uv)) {
+			// `uv as Record<string, any>` keeps Object.entries' value type `any` (the typeof guard would
+			// otherwise narrow `any` to `object`, making the entries `unknown`)
+			const remapped: Record<string, [number, number]> = {};
+			for (const [vk, p] of Object.entries(uv as Record<string, any>)) {
+				remapped[vertexKeyMap.get(vk) ?? vk] = p;
+			}
+			uv = remapped;
 		}
-		faces[id] = face;
+		mesh.addFaces(
+			new MeshFace(mesh, {
+				vertices: (f.vertices ?? []).map((vk) => vertexKeyMap.get(vk) ?? vk),
+				uv: uv as { [vkey: string]: [number, number] } | undefined,
+				texture: tex,
+			})
+		);
 	}
-	const options: any = {
-		name: spec.name,
-		type: 'mesh',
-		vertices: spec.vertices,
-		faces,
-	};
-	if (spec.origin) options.origin = [...spec.origin];
-	if (spec.rotation) options.rotation = [...spec.rotation];
-	return new Mesh(options);
+	return mesh;
 }
 
 /**

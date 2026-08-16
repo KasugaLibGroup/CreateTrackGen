@@ -418,11 +418,15 @@ export function scopeTextureKeys(part: PartModel, prefix: string): PartModel {
 
 /**
  * Decides the new workspace's model format from whether any input part contains mesh groups:
- *  - any part has mesh → 'generic' (free model, the only one that can hold mesh groups)
+ *  - any part has mesh → 'free' (the free model, the only Blockbench format that can hold mesh groups)
  *  - all cubes → Java block/item model (java_item if the current project is java_item, else java_block)
+ *
+ * Note: the free model's format id is 'free' (not 'generic'). createTrackWorkspace resolves the id
+ * against the runtime Formats registry anyway, so any stale 'generic' id is still mapped to the free
+ * model.
  */
 export function targetFormatForParts(parts: { hasMesh?: boolean }[], currentFormat?: string): string {
-	if (parts.some((p) => p.hasMesh)) return 'generic';
+	if (parts.some((p) => p.hasMesh)) return 'free';
 	return currentFormat === 'java_item' ? 'java_item' : 'java_block';
 }
 

@@ -14,10 +14,23 @@
  * Pure functions, Node-testable.
  */
 
-import { computeBBox } from './parts';
-import { bakePartAxisAligned, bakeRotateY90, cloneCubes, lift, rotateVec, rotateX, rotateY, translate } from './transform';
+import { computeBBox, partBBox } from './parts';
+import {
+	bakePartAxisAligned,
+	bakeRotateY90,
+	cloneCubes,
+	cloneMesh,
+	lift,
+	liftMesh,
+	rotateMesh,
+	rotateVec,
+	rotateX,
+	rotateY,
+	translate,
+	translateMesh,
+} from './transform';
 import { t } from '../i18n';
-import type { CubeFaceDirection, CubeSpec, FaceSpec, PartModel, ShapeSpec, TrackConfig, Vec3 } from './types';
+import type { CubeFaceDirection, CubeSpec, FaceSpec, MeshSpec, PartModel, ShapeSpec, TrackConfig, Vec3 } from './types';
 
 /** Shape display name: id + localized parenthesis suffix (cleanGroupName strips the suffix to get the id back) */
 function shapeDisplay(id: string, descKey: string, vars?: string | number): string {
@@ -132,6 +145,75 @@ export function placeTies(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSp
 	return ties;
 }
 
+// ── Mesh placement (mirrors placeRails / placeTies for the parts' mesh groups) ──
+
+/**
+ * Tiles a part's mesh groups along Z over [start, start+length] (a short mesh segment — e.g.
+ * Create's 8px half-block rail — is repeated to fill the track). Mesh vertices can't be baked like
+ * cubes, so each tile is a translated clone of the mesh.
+ */
+function tileMeshZ(part: PartModel, start: number, length: number): MeshSpec[] {
+	const partLen = part.bbox.max[2] - part.bbox.min[2];
+	if (partLen <= 0 || length <= 0) return [];
+	const z0 = part.bbox.min[2];
+	const out: MeshSpec[] = [];
+	for (let z = start; z < start + length; z += partLen) {
+		for (const m of part.meshes ?? []) {
+			out.push(translateMesh(cloneMesh(m), [0, 0, z - z0]));
+		}
+	}
+	return out;
+}
+
+/** Left/right rail meshes: left center x=−g/2, right x=+g/2, lifted by heightPx, tiled along Z. */
+function placeRailsMesh(cfg: TrackConfig, opts: GeneratorOptions = {}): MeshSpec[] {
+	const { gaugePx, heightPx, parts } = cfg;
+	const half = gaugePx / 2;
+	const { start, length } = trackSpan(opts);
+	const left = tileMeshZ(parts.left, start, length).map((m) => translateMesh(m, [-half - parts.left.xMid, 0, 0]));
+	const right = tileMeshZ(parts.right, start, length).map((m) => translateMesh(m, [half - parts.right.xMid, 0, 0]));
+	return [...left.map((m) => liftMesh(m, heightPx)), ...right.map((m) => liftMesh(m, heightPx))];
+}
+
+/**
+ * Turns the tie's mesh groups across X (perpendicular to the Z-laid rails) when their long axis is
+ * along Z — the mesh equivalent of orientTiePerpendicular. The 90° Y rotation is baked into the
+ * vertices (rotateMesh), keeping the mesh origin-less like the parts' baked meshes.
+ */
+function orientTieMeshPerpendicular(meshes: MeshSpec[], bbox: { min: Vec3; max: Vec3 }): MeshSpec[] {
+	const xSpan = bbox.max[0] - bbox.min[0];
+	const zSpan = bbox.max[2] - bbox.min[2];
+	if (zSpan <= xSpan) return meshes;
+	const center: Vec3 = [
+		(bbox.min[0] + bbox.max[0]) / 2,
+		(bbox.min[1] + bbox.max[1]) / 2,
+		(bbox.min[2] + bbox.max[2]) / 2,
+	];
+	return meshes.map((m) => rotateMesh(cloneMesh(m), [0, 90, 0], center));
+}
+
+/** Tie meshes: looped along Z every tieInterval, centered laterally (x=0), long axis across X. */
+function placeTiesMesh(cfg: TrackConfig, opts: GeneratorOptions = {}): MeshSpec[] {
+	const { parts } = cfg;
+	const tieInterval = opts.tieInterval ?? DEFAULT_TIE_INTERVAL;
+	const { start, length } = trackSpan(opts);
+	const tie = parts.tie;
+	const tieCenterZ = (tie.bbox.min[2] + tie.bbox.max[2]) / 2;
+	const oriented = orientTieMeshPerpendicular(tie.meshes ?? [], tie.bbox);
+	const out: MeshSpec[] = [];
+	for (let z = start + tieInterval / 2; z <= start + length; z += tieInterval) {
+		for (const m of oriented) {
+			out.push(translateMesh(cloneMesh(m), [0, 0, z - tieCenterZ]));
+		}
+	}
+	return out;
+}
+
+/** Straight-track (along Z) meshes: rails + ties. */
+function straightZMeshes(cfg: TrackConfig, opts: GeneratorOptions = {}): MeshSpec[] {
+	return [...placeRailsMesh(cfg, opts), ...placeTiesMesh(cfg, opts)];
+}
+
 export function centerOf(cubes: CubeSpec[]): Vec3 {
 	const bbox = computeBBox(cubes);
 	return [
@@ -162,6 +244,30 @@ function renderedMinY(cubes: CubeSpec[]): number {
 	return minY;
 }
 
+/** Lowest vertex y across a mesh list (baked world-space vertices — no per-vertex rotation to apply) */
+function meshMinY(meshes: MeshSpec[]): number {
+	let minY = Infinity;
+	for (const m of meshes) {
+		for (const v of Object.values(m.vertices)) minY = Math.min(minY, v[1]);
+	}
+	return minY;
+}
+
+/** The lowest rendered y of cubes + meshes (used by the ascending lift) */
+function combinedMinY(cubes: CubeSpec[], meshes: MeshSpec[]): number {
+	return Math.min(renderedMinY(cubes), meshes.length ? meshMinY(meshes) : Infinity);
+}
+
+/** Center of the combined cube + mesh geometry (safe when either side is empty) */
+function combinedCenter(cubes: CubeSpec[], meshes: MeshSpec[]): Vec3 {
+	const bbox = partBBox(cubes, meshes);
+	return [
+		(bbox.min[0] + bbox.max[0]) / 2,
+		(bbox.min[1] + bbox.max[1]) / 2,
+		(bbox.min[2] + bbox.max[2]) / 2,
+	];
+}
+
 /** Straight track (along Z): left/right rails + ties. */
 export function straightZ(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSpec[] {
 	return [...placeRails(cfg, opts), ...placeTies(cfg, opts)];
@@ -173,13 +279,28 @@ export function straightX(cfg: TrackConfig, opts: GeneratorOptions = {}): CubeSp
 	return rotateY(zs, 90, centerOf(zs));
 }
 
-/** Straight shape (x_ortho / z_ortho) */
+/** Straight shape (x_ortho / z_ortho): cubes + the parts' mesh groups placed/rotated the same way. */
 export function straight(cfg: TrackConfig, axis: TrackAxis = 'z', opts: GeneratorOptions = {}): ShapeSpec {
-	const cubes = axis === 'z' ? straightZ(cfg, opts) : straightX(cfg, opts);
+	const zc = straightZ(cfg, opts);
+	const zm = straightZMeshes(cfg, opts);
+	if (axis === 'z') {
+		return {
+			id: 'z_ortho',
+			name: shapeDisplay('z_ortho', 'ctg.shape.desc.z_ortho'),
+			cubes: zc,
+			meshes: zm,
+		};
+	}
+	// x_ortho = Z track rotated 90° about the combined center (mesh rotation is baked into vertices)
+	const pivot = combinedCenter(zc, zm);
 	return {
-		id: axis === 'z' ? 'z_ortho' : 'x_ortho',
-		name: axis === 'z' ? shapeDisplay('z_ortho', 'ctg.shape.desc.z_ortho') : shapeDisplay('x_ortho', 'ctg.shape.desc.x_ortho'),
-		cubes,
+		id: 'x_ortho',
+		name: shapeDisplay('x_ortho', 'ctg.shape.desc.x_ortho'),
+		cubes: rotateY(zc, 90, pivot),
+		// Mesh Y rotation is negated vs the cube: rotateMesh/rotateVec applies the opposite Y direction
+		// to Cube.rotation (Blockbench renders a [0,+,0] field with the standard R_y), so the baked
+		// vertices must use −90° to land on the same diagonal the cube shows.
+		meshes: zm.map((m) => rotateMesh(m, [0, -90, 0], pivot)),
 	};
 }
 
@@ -192,12 +313,17 @@ export function straight(cfg: TrackConfig, axis: TrackAxis = 'z', opts: Generato
  */
 export function diagonal(cfg: TrackConfig, mirror: boolean, opts: GeneratorOptions = {}): ShapeSpec {
 	const zs = straightZ(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
+	const zm = straightZMeshes(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
 	const angle = mirror ? -45 : 45;
-	const rotated = rotateY(zs, angle, centerOf(zs));
+	const pivot = combinedCenter(zs, zm);
 	return {
 		id: mirror ? 'diag_2' : 'diag',
 		name: mirror ? shapeDisplay('diag_2', 'ctg.shape.desc.diag_2') : shapeDisplay('diag', 'ctg.shape.desc.diag'),
-		cubes: rotated,
+		cubes: rotateY(zs, angle, pivot),
+		// Mesh Y rotation is negated vs the cube (see straight/rotateMesh note): baking +45 here would
+		// land the mesh on the OPPOSITE diagonal from the cube's [0,+45,0], so diag's mesh must be
+		// baked −45 to match. This keeps rail/tie meshes on the same diagonal as the cube rails/ties.
+		meshes: zm.map((m) => rotateMesh(m, [0, -angle, 0], pivot)),
 	};
 }
 
@@ -231,7 +357,8 @@ export function ascending(
 	opts: GeneratorOptions = {}
 ): ShapeSpec {
 	const zs = straightZ(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
-	const bbox = computeBBox(zs);
+	const zm = straightZMeshes(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
+	const bbox = partBBox(zs, zm);
 	// Pivot = the track's xz center (the block center (8,8) in Java mode), Y at rail height
 	const pivot: Vec3 = [
 		(bbox.min[0] + bbox.max[0]) / 2,
@@ -239,20 +366,32 @@ export function ascending(
 		(bbox.min[2] + bbox.max[2]) / 2,
 	];
 	const yaw: Record<string, number> = { south: 0, north: 180, east: 270, west: 90 };
-	const tilted = rotateY(rotateX(zs, -45, pivot), yaw[dir], pivot);
+	// Cubes: rotation field (origin=pivot); meshes: baked (pivot + R·(v−pivot)), same X-then-Y order.
+	// The mesh yaw is negated vs the cube field (see straight/rotateMesh note): the X tilt shares the
+	// same direction (both R_x), only the Y yaw flips, so the baked mesh matches the cube's [-45,yaw,0].
+	const tiltedCubes = rotateY(rotateX(zs, -45, pivot), yaw[dir], pivot);
+	const tiltedMeshes = zm.map((m) => rotateMesh(m, [-45, 0, 0], pivot)).map((m) => rotateMesh(m, [0, -yaw[dir], 0], pivot));
 	const wholeY = cfg.wholeModelYOffset ?? 0;
-	let cubes = tilted;
+	let cubes = tiltedCubes;
+	let meshes = tiltedMeshes;
 	// Lift amount covers the whole-model Y offset: with a negative offset, lift extra to guarantee the
 	// lowest point (after the offset) is ≥ 0
-	const need = -(renderedMinY(cubes) + Math.min(0, wholeY));
-	if (need > 0) cubes = lift(cubes, need);
+	const need = -(combinedMinY(cubes, meshes) + Math.min(0, wholeY));
+	if (need > 0) {
+		cubes = lift(cubes, need);
+		meshes = meshes.map((m) => liftMesh(m, need));
+	}
 	// Fallback: if the final lowest point (including the whole offset) is still <0 under float error, lift again
-	const finalMin = renderedMinY(cubes) + wholeY;
-	if (finalMin < 0) cubes = lift(cubes, -finalMin);
+	const finalMin = combinedMinY(cubes, meshes) + wholeY;
+	if (finalMin < 0) {
+		cubes = lift(cubes, -finalMin);
+		meshes = meshes.map((m) => liftMesh(m, -finalMin));
+	}
 	return {
 		id: `ascending_${dir}`,
 		name: `ascending_${dir}${t('ctg.shape.desc.ascending', t('ctg.dir.' + dir))}`,
 		cubes,
+		meshes,
 	};
 }
 
@@ -284,6 +423,16 @@ function remapAllFaces(cubes: CubeSpec[], textureKey: string): CubeSpec[] {
 		}
 		return { ...c, faces };
 	});
+}
+
+/** Mesh equivalent of remapAllFaces: every mesh face is re-textured with textureKey (UV kept) */
+function remapAllMeshFaces(meshes: MeshSpec[], textureKey: string): MeshSpec[] {
+	return meshes.map((m) => ({
+		...m,
+		faces: Object.fromEntries(
+			Object.entries(m.faces).map(([id, f]) => [id, f ? { ...f, texture: textureKey } : f])
+		),
+	}));
 }
 
 /**
@@ -344,21 +493,34 @@ function buildPortalOverlays(cfg: TrackConfig, opts: GeneratorOptions = {}): Cub
  * When neither is set, degrades to a plain straight track identical to z_ortho / x_ortho.
  */
 export function teleport(cfg: TrackConfig, axis: TrackAxis = 'z', opts: GeneratorOptions = {}): ShapeSpec {
-	const zs = straightZ(cfg, opts);
+	const zc = straightZ(cfg, opts);
+	const zm = straightZMeshes(cfg, opts);
 	const portal = cfg.portal;
-	let all = zs;
+	let all = zc;
+	let meshes = zm;
 	// portal_track optional: when set, cover track/tie with it; otherwise use the parts' default textures
 	if (portal?.trackTexture) {
 		all = remapAllFaces(all, portal.trackTexture);
+		meshes = remapAllMeshFaces(meshes, portal.trackTexture);
 	}
 	// portal_track_mip optional: when set, generate the left/right overlays; otherwise none
 	const overlays = buildPortalOverlays(cfg, opts) ?? [];
 	all = [...all, ...overlays];
-	const cubes = axis === 'x' ? rotateY(all, 90, centerOf(all)) : all;
+	if (axis === 'x') {
+		const pivot = combinedCenter(all, meshes);
+		return {
+			id: 'teleport_x',
+			name: shapeDisplay('teleport_x', 'ctg.shape.desc.teleport_x'),
+			cubes: rotateY(all, 90, pivot),
+			// Mesh Y rotation negated vs the cube field (see straight/rotateMesh note)
+			meshes: meshes.map((m) => rotateMesh(m, [0, -90, 0], pivot)),
+		};
+	}
 	return {
-		id: axis === 'x' ? 'teleport_x' : 'teleport',
-		name: axis === 'x' ? shapeDisplay('teleport_x', 'ctg.shape.desc.teleport_x') : shapeDisplay('teleport', 'ctg.shape.desc.teleport'),
-		cubes,
+		id: 'teleport',
+		name: shapeDisplay('teleport', 'ctg.shape.desc.teleport'),
+		cubes: all,
+		meshes,
 	};
 }
 
@@ -380,24 +542,41 @@ export function cross(
 	opts: GeneratorOptions = {}
 ): ShapeSpec {
 	let cubes: CubeSpec[] = [];
+	let meshes: MeshSpec[] = [];
 	switch (kind) {
-		case 'ortho':
-			cubes = [...straightZ(cfg, opts), ...straightX(cfg, opts)];
+		case 'ortho': {
+			// Z straight + X straight (X = Z rotated 90° about the combined center)
+			const zc = straightZ(cfg, opts);
+			const zm = straightZMeshes(cfg, opts);
+			const pivot = combinedCenter(zc, zm);
+			cubes = [...zc, ...rotateY(zc, 90, pivot)];
+			// Mesh Y rotation negated vs the cube field (see straight/rotateMesh note)
+			meshes = [...zm, ...zm.map((m) => rotateMesh(m, [0, -90, 0], pivot))];
 			break;
+		}
 		case 'diag': {
 			// Diagonal crossing uses the diagonal length (3 segments / 3 ties)
 			const zs = straightZ(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
-			const pos = rotateY(zs, 45, centerOf(zs));
-			const neg = rotateY(zs, -45, centerOf(zs));
-			cubes = [...pos, ...neg];
+			const zm = straightZMeshes(cfg, { ...opts, length: opts.length ?? diagonalLength(opts) });
+			const pivot = combinedCenter(zs, zm);
+			cubes = [...rotateY(zs, 45, pivot), ...rotateY(zs, -45, pivot)];
+			// Mesh Y rotations negated vs the cube fields (see straight/rotateMesh note): +45 cube ↔
+			// −45 mesh bake, −45 cube ↔ +45 mesh bake, so each mesh diagonal matches its cube diagonal
+			meshes = [...zm.map((m) => rotateMesh(m, [0, -45, 0], pivot)), ...zm.map((m) => rotateMesh(m, [0, 45, 0], pivot))];
 			break;
 		}
-		case 'pd_zo':
-			cubes = [...diagonal(cfg, false, opts).cubes, ...straightZ(cfg, opts)];
+		case 'pd_zo': {
+			const diag = diagonal(cfg, false, opts);
+			cubes = [...diag.cubes, ...straightZ(cfg, opts)];
+			meshes = [...(diag.meshes ?? []), ...straightZMeshes(cfg, opts)];
 			break;
-		case 'nd_zo':
-			cubes = [...diagonal(cfg, true, opts).cubes, ...straightZ(cfg, opts)];
+		}
+		case 'nd_zo': {
+			const diag = diagonal(cfg, true, opts);
+			cubes = [...diag.cubes, ...straightZ(cfg, opts)];
+			meshes = [...(diag.meshes ?? []), ...straightZMeshes(cfg, opts)];
 			break;
+		}
 	}
 	const idMap: Record<string, string> = {
 		ortho: 'cross_ortho',
@@ -411,7 +590,7 @@ export function cross(
 		pd_zo: shapeDisplay('cross_d2_xo', 'ctg.shape.desc.cross_pd_zo'),
 		nd_zo: shapeDisplay('cross_d1_xo', 'ctg.shape.desc.cross_nd_zo'),
 	};
-	return { id: idMap[kind], name: nameMap[kind], cubes };
+	return { id: idMap[kind], name: nameMap[kind], cubes, meshes };
 }
 
 /** Shape definition table: the builder for every TrackShape */
@@ -430,7 +609,11 @@ export interface ShapeDef {
 function applyWholeOffset(cfg: TrackConfig, shape: ShapeSpec): ShapeSpec {
 	const dy = cfg.wholeModelYOffset ?? 0;
 	if (dy === 0) return shape;
-	return { ...shape, cubes: lift(shape.cubes, dy) };
+	return {
+		...shape,
+		cubes: lift(shape.cubes, dy),
+		meshes: shape.meshes ? shape.meshes.map((m) => liftMesh(m, dy)) : shape.meshes,
+	};
 }
 
 /**

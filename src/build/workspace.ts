@@ -46,7 +46,7 @@ function importSourceTextures(textures: SourceTexture[]): Map<string, Texture> {
 /**
  * Creates the output workspace and imports the part textures, returning a "source texture key →
  * Texture" map.
- *  - creates the workspace with the given format: 'generic' (free model) when a part has mesh groups,
+ *  - creates the workspace with the given format: 'free' (free model) when a part has mesh groups,
  *    otherwise Java block/item model
  *  - sets the workspace name and texture resolution
  *  - removes the new workspace's default blank texture, then imports the parts' source textures
@@ -58,6 +58,14 @@ export function createTrackWorkspace(
 	textureSize: [number, number],
 	textures: SourceTexture[]
 ): Map<string, Texture> {
+	// Resolve the format id against the runtime Formats registry (falling back to the free model), so
+	// the new workspace's format is correct regardless of how the host Blockbench's newProject() maps
+	// the string — older versions default unknown ids (e.g. the legacy 'generic') to java_block, which
+	// would hide mesh groups. Node smoke tests have no Formats global, so the string is passed through.
+	if (typeof format === 'string') {
+		const F = (globalThis as any).Formats as Record<string, ModelFormat> | undefined;
+		format = F?.[format] ?? F?.free ?? format;
+	}
 	if (!newProject(format)) {
 		throw new Error(t('ctg.workspace.create_fail'));
 	}

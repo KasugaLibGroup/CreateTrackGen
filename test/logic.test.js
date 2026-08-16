@@ -79,7 +79,7 @@ const sampleBbModel = {
 t('symmetryPointForFormat：java→(8,8)，其他→(0,0)', () => {
 	assert.deepStrictEqual(L.symmetryPointForFormat('java_block'), [8, 0, 8]);
 	assert.deepStrictEqual(L.symmetryPointForFormat('java_item'), [8, 0, 8]);
-	assert.deepStrictEqual(L.symmetryPointForFormat('generic'), [0, 0, 0]);
+	assert.deepStrictEqual(L.symmetryPointForFormat('free'), [0, 0, 0]);
 	assert.deepStrictEqual(L.symmetryPointForFormat(undefined), [0, 0, 0]);
 });
 
@@ -161,7 +161,7 @@ t('parseBbModel 保留数组旋转，placeRails 烘焙进坐标（钢轨方向�
 t('outputOffsetForFormat：java 平移 (8,8)，其他 (0,0)', () => {
 	assert.deepStrictEqual(L.outputOffsetForFormat('java_block'), [8, 0, 8]);
 	assert.deepStrictEqual(L.outputOffsetForFormat('java_item'), [8, 0, 8]);
-	assert.deepStrictEqual(L.outputOffsetForFormat('generic'), [0, 0, 0]);
+	assert.deepStrictEqual(L.outputOffsetForFormat('free'), [0, 0, 0]);
 	assert.deepStrictEqual(L.outputOffsetForFormat(undefined), [0, 0, 0]);
 });
 
@@ -335,11 +335,11 @@ t('mirrorPartYz 镜像 mesh：顶点 x 反射 + 面绕序反转（对合）', ()
 	assert.deepStrictEqual(twice.meshes, part.meshes);
 });
 
-t('targetFormatForParts：含 mesh → generic，全 cube → Java 方块/物品', () => {
-	assert.strictEqual(L.targetFormatForParts([{ hasMesh: true }, {}], 'java_block'), 'generic', '任一零件含 mesh → 自由模型');
+t('targetFormatForParts：含 mesh → free，全 cube → Java 方块/物品', () => {
+	assert.strictEqual(L.targetFormatForParts([{ hasMesh: true }, {}], 'java_block'), 'free', '任一零件含 mesh → 自由模型');
 	assert.strictEqual(L.targetFormatForParts([{ hasMesh: false }, {}], 'java_block'), 'java_block');
 	assert.strictEqual(L.targetFormatForParts([{}, {}], 'java_item'), 'java_item');
-	assert.strictEqual(L.targetFormatForParts([{}, {}], 'generic'), 'java_block', '非 Java 项目全 cube 默认 java_block');
+	assert.strictEqual(L.targetFormatForParts([{}, {}], 'free'), 'java_block', '非 Java 项目全 cube 默认 java_block');
 });
 
 // ── mesh origin 参考系：origin 是世界锚点、顶点是局部坐标，必须烘焙进顶点 ──
@@ -376,7 +376,7 @@ t('mesh origin+rotation 烘焙进顶点：世界坐标 = origin + R·顶点，or
 
 t('mesh 有非零旋转时烘焙 rotation 进顶点', () => {
 	const json = {
-		meta: { model_format: 'generic' },
+		meta: { model_format: 'free' },
 		elements: [
 			{
 				name: 'm',
@@ -393,6 +393,203 @@ t('mesh 有非零旋转时烘焙 rotation 进顶点', () => {
 	assert.strictEqual(m.rotation, undefined, '旋转应被烘焙掉');
 	// 顶点 [1,0,0] 绕 Y +90° → [0,0,1]；再无所谓 origin（为 0）
 	assert(Math.abs(m.vertices['0'][0]) < 1e-9 && Math.abs(m.vertices['0'][2] - 1) < 1e-9, `顶点应旋转为 [0,0,1]，实际 ${m.vertices['0']}`);
+});
+
+t('translateMesh / liftMesh 平移 mesh 顶点（origin 同步）', () => {
+	const mesh = {
+		name: 'm',
+		vertices: { '0': [1, 2, 3], '1': [4, 5, 6] },
+		faces: {},
+		origin: [10, 10, 10],
+	};
+	const t = L.translateMesh(mesh, [1, 0, -1]);
+	assert.deepStrictEqual(t.vertices['0'], [2, 2, 2], '顶点应平移');
+	assert.deepStrictEqual(t.origin, [11, 10, 9], 'origin 应同步平移');
+	assert.deepStrictEqual(mesh.vertices['0'], [1, 2, 3], '不污染入参');
+	const lifted = L.liftMesh(mesh, 5);
+	assert.deepStrictEqual(lifted.vertices['1'], [4, 10, 6], 'lift 即沿 Y 平移');
+});
+
+t('rotateMesh 绕枢轴烘焙旋转进顶点（world′ = pivot + R·(world−pivot)）', () => {
+	const mesh = {
+		name: 'm',
+		vertices: { '0': [1, 0, 0], '1': [-1, 0, 0], '2': [0, 2, 0] },
+		faces: {},
+		origin: [0, 0, 0],
+	};
+	// 绕原点 Y +90°：[1,0,0] → [0,0,1]；[-1,0,0] → [0,0,-1]
+	const r = L.rotateMesh(mesh, [0, 90, 0], [0, 0, 0]);
+	assert(Math.abs(r.vertices['0'][0]) < 1e-9 && Math.abs(r.vertices['0'][2] - 1) < 1e-9, `顶点应旋转为 [0,0,1]，实际 ${r.vertices['0']}`);
+	assert(Math.abs(r.vertices['1'][2] + 1) < 1e-9, `顶点应旋转为 [0,0,-1]，实际 ${r.vertices['1']}`);
+	// 绕非零枢轴：[2,0,0] 绕枢轴 [1,0,0] Y+90° → rel [1,0,0] → [0,0,1]，world [1,0,1]
+	const r2 = L.rotateMesh({ ...mesh, vertices: { '0': [2, 0, 0] } }, [0, 90, 0], [1, 0, 0]);
+	assert(Math.abs(r2.vertices['0'][0] - 1) < 1e-9 && Math.abs(r2.vertices['0'][2] - 1) < 1e-9, `绕枢轴旋转错误，实际 ${r2.vertices['0']}`);
+	assert.strictEqual(r2.origin, undefined, '烘焙后 origin 应置空');
+});
+
+t('含 mesh 零件的 allShapes：9 个方向形状都携带变换后的 mesh 几何', () => {
+	// 左/右轨 + 枕木都带 mesh（mesh-only 钢轨：0 cube，只贡献 mesh 几何）
+	const meshPart = {
+		cubes: [],
+		meshes: [
+			{
+				name: 'railmesh',
+				vertices: { '0': [-1, 0, 0], '1': [1, 0, 0], '2': [1, 4, 0], '3': [-1, 4, 0], '4': [-1, 0, 16], '5': [1, 0, 16], '6': [1, 4, 16], '7': [-1, 4, 16] },
+				faces: { '0': { vertices: ['0', '1', '2', '3'] } },
+			},
+		],
+		bbox: { min: [-1, 0, 0], max: [1, 4, 16] },
+		xMid: 0,
+		hasMesh: true,
+		textureSize: [16, 16],
+	};
+	const tieMeshPart = {
+		...meshPart,
+		bbox: { min: [-1, 0, 0], max: [1, 4, 16] },
+	};
+	const cfg = {
+		gaugePx: 8,
+		heightPx: 2,
+		parts: { left: meshPart, right: JSON.parse(JSON.stringify(meshPart)), tie: tieMeshPart },
+	};
+	const shapes = L.allShapes(cfg);
+	assert.strictEqual(shapes.length, 9);
+	// 每个形状都有 mesh 几何，且每个 mesh 的面顶点引用都能解析到自身顶点
+	for (const s of shapes) {
+		assert(Array.isArray(s.meshes) && s.meshes.length > 0, `${s.id} 应携带 mesh 几何`);
+		for (const m of s.meshes) {
+			for (const f of Object.values(m.faces)) {
+				for (const vk of f.vertices ?? []) {
+					assert(m.vertices[vk], `${s.id} mesh 面引用缺失顶点 ${vk}`);
+				}
+			}
+		}
+	}
+	// 直轨左轨 mesh 应位于 x=−g/2=−4（钢轨沿 Z 摆放、抬升 heightPx=2）——用 straight('z') 检查
+	const zStraight = L.straight(cfg, 'z');
+	const leftRailMesh = zStraight.meshes.find((m) => m.name === 'railmesh');
+	assert(leftRailMesh, 'z 直轨应含钢轨 mesh');
+	const xs = Object.values(leftRailMesh.vertices).map((v) => v[0]);
+	assert(Math.abs((Math.min(...xs) + Math.max(...xs)) / 2 + 4) < 1e-9, `左轨 mesh 中心应在 x=-4，实际 ${(Math.min(...xs) + Math.max(...xs)) / 2}`);
+	// 左轨 y 应抬升到 heightPx=2（底面 y=2），且轨道沿 Z（z 跨度大）
+	const ys = Object.values(leftRailMesh.vertices).map((v) => v[1]);
+	const zs = Object.values(leftRailMesh.vertices).map((v) => v[2]);
+	assert(Math.min(...ys) > 1.9, `左轨 mesh 底面应抬升到 heightPx=2，实际 ${Math.min(...ys)}`);
+	assert(Math.max(...zs) - Math.min(...zs) > 10, '左轨 mesh 应沿 Z 摆放');
+	// x_ortho 的 mesh 应被旋转 90°（钢轨变为 x 跨度）
+	const xo = shapes.find((s) => s.id === 'x_ortho');
+	const xoMesh = xo.meshes[0];
+	const xoXs = Object.values(xoMesh.vertices).map((v) => v[0]);
+	assert(Math.max(...xoXs) - Math.min(...xoXs) > 10, 'x_ortho 的钢轨 mesh 应旋转 90°（x 跨度大）');
+	// diag 的 mesh 应绕 Y ±45°（顶点 x/z 都非零）
+	const diag = shapes.find((s) => s.id === 'diag');
+	const diagMesh = diag.meshes.find((m) => m.name === 'railmesh');
+	const dvs = Object.values(diagMesh.vertices);
+	const rotated45 = dvs.some((v) => Math.abs(v[0]) > 0.5 && Math.abs(v[2]) > 0.5);
+	assert(rotated45, 'diag 的 mesh 应被旋转 45°（x 与 z 均非零）');
+});
+
+// ── 回归：45° 斜轨的 mesh 方向必须与 cube 一致 ──
+// 背景：Blockbench 渲染 Cube.rotation [0,+,0] 用标准 R_y（+angle 把 +Z 转向 +X），而本插件的
+// rotateVec/rotY 是 R_y 的反方向。cube 走 rotation 字段、mesh 走烘焙顶点，若给 mesh 烘 +45°，会落在
+// 与 cube 相反的对角线上（枕木 mesh 与枕木 cube 交叉）。修复：mesh 的 Y 旋转取反，与 cube 同向。
+/** 顶点云的主轴方向（PCA 最大特征向量，x 归正） */
+function meshDir(verts) {
+	const n = verts.length;
+	const mean = [0, 0, 0];
+	for (const v of verts) for (let i = 0; i < 3; i++) mean[i] += v[i];
+	for (let i = 0; i < 3; i++) mean[i] /= n;
+	let xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0;
+	for (const v of verts) {
+		const dx = v[0] - mean[0], dy = v[1] - mean[1], dz = v[2] - mean[2];
+		xx += dx * dx; xy += dx * dy; xz += dx * dz;
+		yy += dy * dy; yz += dy * dz; zz += dz * dz;
+	}
+	let d = [1, 0, 0];
+	for (let i = 0; i < 50; i++) {
+		const nx = xx * d[0] + xy * d[1] + xz * d[2];
+		const ny = xy * d[0] + yy * d[1] + yz * d[2];
+		const nz = xz * d[0] + yz * d[1] + zz * d[2];
+		const l = Math.hypot(nx, ny, nz) || 1;
+		d = [nx / l, ny / l, nz / l];
+	}
+	return d[0] < 0 ? d.map((v) => -v) : d;
+}
+/** 用标准 R_y（Blockbench 渲染 Cube.rotation 的约定）烘焙一个带 rotation 的 cube 的 8 个角点 */
+function renderStdRY(c) {
+	const a = (c.rotation[1] * Math.PI) / 180;
+	const cos = Math.cos(a), sin = Math.sin(a);
+	const p = c.origin;
+	const pts = [];
+	for (const x of [c.from[0], c.to[0]])
+		for (const y of [c.from[1], c.to[1]])
+			for (const z of [c.from[2], c.to[2]]) {
+				const rel = [x - p[0], y - p[1], z - p[2]];
+				pts.push([cos * rel[0] + sin * rel[2] + p[0], rel[1] + p[1], -sin * rel[0] + cos * rel[2] + p[2]]);
+			}
+	return pts;
+}
+const dot3 = (a, b) => Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+
+t('diag / diag_2：枕木 mesh 与枕木 cube 同向、钢轨 mesh 与之垂直（不再反向）', () => {
+	// mesh-only 钢轨零件（Z 长 8px，与 Create 半块段一致）+ 带 cube 与 mesh 的枕木零件（X 长）
+	const railMesh = {
+		cubes: [],
+		meshes: [{ name: 'railmesh', vertices: { '0': [-1, 0, -4], '1': [1, 0, -4], '2': [1, 4, -4], '3': [-1, 4, -4], '4': [-1, 0, 4], '5': [1, 0, 4], '6': [1, 4, 4], '7': [-1, 4, 4] }, faces: {} }],
+		bbox: { min: [-1, 0, -4], max: [1, 4, 4] },
+		xMid: 0, hasMesh: true,
+	};
+	const tieMixed = {
+		cubes: [{ name: 'tie', from: [-8, 0, -1], to: [8, 1, 1] }],
+		meshes: [{ name: 'tiemesh', vertices: { '0': [-8, 0, -1], '1': [8, 0, -1], '2': [8, 1, -1], '3': [-8, 1, -1], '4': [-8, 0, 1], '5': [8, 0, 1], '6': [8, 1, 1], '7': [-8, 1, 1] }, faces: {} }],
+		bbox: { min: [-8, 0, -1], max: [8, 1, 1] },
+		xMid: 0, hasMesh: true,
+	};
+	const cfgD = { gaugePx: 8, heightPx: 2, parts: { left: railMesh, right: JSON.parse(JSON.stringify(railMesh)), tie: tieMixed } };
+	for (const mirror of [false, true]) {
+		const label = mirror ? 'diag_2' : 'diag';
+		const s = L.diagonal(cfgD, mirror, { tieInterval: 8 });
+		const tieCube = s.cubes.find((c) => c.name === 'tie' && c.rotation);
+		assert(tieCube, `${label} 应含旋转的枕木 cube`);
+		const tieCubeDir = meshDir(renderStdRY(tieCube));
+		const tieMesh = s.meshes.find((m) => m.name === 'tiemesh');
+		assert(tieMesh, `${label} 应含枕木 mesh`);
+		const tieMeshDir = meshDir(Object.values(tieMesh.vertices));
+		assert(dot3(tieCubeDir, tieMeshDir) > 0.99, `${label} 枕木 mesh 应与枕木 cube 同向（dir cube=${tieCubeDir}, mesh=${tieMeshDir}）`);
+		const rail = s.meshes.find((m) => m.name === 'railmesh');
+		const railDir = meshDir(Object.values(rail.vertices));
+		assert(dot3(tieMeshDir, railDir) < 0.1, `${label} 钢轨 mesh 应与枕木垂直（沿轨道方向）`);
+	}
+});
+
+t('cross_d1_xo / cross_d2_xo：斜轨部分 mesh 与 cube 同向', () => {
+	const railMesh = {
+		cubes: [],
+		meshes: [{ name: 'railmesh', vertices: { '0': [-1, 0, -4], '1': [1, 0, -4], '2': [1, 4, -4], '3': [-1, 4, -4], '4': [-1, 0, 4], '5': [1, 0, 4], '6': [1, 4, 4], '7': [-1, 4, 4] }, faces: {} }],
+		bbox: { min: [-1, 0, -4], max: [1, 4, 4] },
+		xMid: 0, hasMesh: true,
+	};
+	const tieMixed = {
+		cubes: [{ name: 'tie', from: [-8, 0, -1], to: [8, 1, 1] }],
+		meshes: [{ name: 'tiemesh', vertices: { '0': [-8, 0, -1], '1': [8, 0, -1], '2': [8, 1, -1], '3': [-8, 1, -1], '4': [-8, 0, 1], '5': [8, 0, 1], '6': [8, 1, 1], '7': [-8, 1, 1] }, faces: {} }],
+		bbox: { min: [-8, 0, -1], max: [8, 1, 1] },
+		xMid: 0, hasMesh: true,
+	};
+	const cfgX = { gaugePx: 8, heightPx: 2, parts: { left: railMesh, right: JSON.parse(JSON.stringify(railMesh)), tie: tieMixed } };
+	for (const id of ['cross_d1_xo', 'cross_d2_xo']) {
+		const s = L.allShapes(cfgX).find((x) => x.id === id);
+		// 交叉里每个旋转枕木 cube 都应有同向的枕木 mesh（逐段比，避免直轨 X 长枕木干扰总和 PCA）
+		const rotTies = s.cubes.filter((c) => c.name === 'tie' && c.rotation);
+		assert(rotTies.length >= 3, `${id} 应含旋转的枕木 cube`);
+		for (const tc of rotTies) {
+			const tcDir = meshDir(renderStdRY(tc));
+			const tm = s.meshes.filter((m) => m.name === 'tiemesh').find((m) => {
+				const d = meshDir(Object.values(m.vertices));
+				return dot3(tcDir, d) > 0.99;
+			});
+			assert(tm, `${id} 每个旋转枕木 cube 都应有同向的枕木 mesh`);
+		}
+	}
 });
 
 // ── transform：平移 / 旋转 / 抬升 ──

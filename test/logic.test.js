@@ -83,6 +83,23 @@ t('symmetryPointForFormat：java→(8,8)，其他→(0,0)', () => {
 	assert.deepStrictEqual(L.symmetryPointForFormat(undefined), [0, 0, 0]);
 });
 
+t('isFreeModelFormat：free/generic 为自由模型，java 非', () => {
+	assert.strictEqual(L.isFreeModelFormat('free'), true, 'free 是自由模型格式');
+	assert.strictEqual(L.isFreeModelFormat('generic'), true, 'generic 是自由模型的旧名');
+	assert.strictEqual(L.isFreeModelFormat('java_block'), false);
+	assert.strictEqual(L.isFreeModelFormat('java_item'), false);
+	assert.strictEqual(L.isFreeModelFormat(undefined), false);
+});
+
+t('examplePartBox：示例钢轨/枕木为长方体，尺寸参考 test/sample_parts 并居中于对称点', () => {
+	// java_block 对称点 (8,8)：钢轨 2.4 宽 × 2.8 高 × 8 长，枕木 32 宽 × 4 高 × 3.5 深，底 y=0
+	assert.deepStrictEqual(L.examplePartBox('rail', 'java_block'), { from: [6.8, 0, 4], to: [9.2, 2.8, 12] });
+	assert.deepStrictEqual(L.examplePartBox('tie', 'java_block'), { from: [-8, 0, 6.25], to: [24, 4, 9.75] });
+	// 自由模型对称点 (0,0)
+	assert.deepStrictEqual(L.examplePartBox('rail', 'free'), { from: [-1.2, 0, -4], to: [1.2, 2.8, 4] });
+	assert.deepStrictEqual(L.examplePartBox('tie', 'free'), { from: [-16, 0, -1.75], to: [16, 4, 1.75] });
+});
+
 t('parseBbModel（Java 块，对称点 8,8）：对称点平移到原点', () => {
 	// 原始 bbox：x 2..14（对称中心 8）、z 0..16（对称中心 8）、y 0..4
 	// 归一化后：x 变为 -6..6（中心 0），z 变为 -8..8（中心 0），y 仍 0..4

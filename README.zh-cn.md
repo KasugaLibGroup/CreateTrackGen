@@ -24,7 +24,7 @@ Blockbench 插件：根据玩家提供的 **左轨 / 右轨 / 枕木** 三个零
   - **上升轨道**：与斜轨一样 3 段钢轨 / 3 根枕木（长度 24px），绕中心 -45° 倾斜后整体抬升，**在轨道高度与整体 Y 偏移两个用户可定义偏移生效之后**，最低的枕木角仍恰好落在 xz 平面（y≥0）——整体偏移为负时也会把上升轨顶回平面
   - **弯道渲染基础分组**：`tie` / `segment_left` / `segment_right` 三个分组（Create 曲线渲染用的三个模型）**与各方向轨道形状一起挂在轨道大组下**（大组名 = 工作区名），各含对应零件（cube + mesh 组），并排成**轨道单元布局**：两条钢轨各自以自身模型中心为轴、中心 x 坐标归零（Java 模型中心的 (8,8) / 其他格式的 (0,0) 都平移到 x=0，同 Create 的 segment_left/right.obj），近 z 端靠在 xy 平面（z=0），钢轨底面抬升到 轨道高度 + 整体 Y 偏移；枕木移到 z_ortho 中靠近 x 轴的第一个枕木位置（z=4），仅加整体 Y 偏移（不抬升）。钢轨之间的 ±轨距/2 间距由 Create 在渲染时摆放
   - **工作区格式自动判定**：任一零件含 mesh 组（`.bbmodel` 的 `type:"mesh"` 元素）→ 新工作区为**自由模型**（generic）；否则为 **Java 方块/物品模型**
-- **导出轨道模型**：`工具 → 导出轨道模型`，**4 种导出模式**（对话框下拉选择）
+- **导出轨道模型**：`工具 → 导出轨道模型`，**4 种导出模式**（对话框下拉选择）；**若当前工作区是自由模型（generic），导出模式被锁定为「全部导出为 OBJ」**——自由模型以原点为中心的几何无法用 Java / 基岩版方块格式表达，对话框会禁用模式选择并提示
   - **1.21.11+ 新 Java**（`format_version: "1.21.11"`，元素旋转支持多轴 `{x,y,z}`）
   - **1.21.11- 经典 Java**（不加 `format_version`，完全匹配 assets 示例；元素仅单轴旋转 `{angle,axis}`）
   - **基岩版方块模型**（每形状一个 `minecraft:geometry` + `blocks.json`）
@@ -48,6 +48,7 @@ Blockbench 插件：根据玩家提供的 **左轨 / 右轨 / 枕木** 三个零
   - **OBJ 导出**：把分组内所有体块 / 网格烘焙为**单一合并网格**（单一 `o` 对象、位于根下、无 `o`/`g` 分组），以便 Forge 加载器整体读取；坐标为方块单位（px/16），vt 翻底，纹理经 `usemtl m_<key>` + MTL `map_Kd {命名空间}:block/track/{轨道id}/{资源名}` 绑定；模型 JSON 为 `forge:obj` 引用（`flip_v: true`）
 - **轨距换算**：`工具 → 轨距换算`，输入 mm 输出 Create 弯道比例常数
   - 锚点：1435mm→0.755、1600mm→0.965、1000mm→0.525（二次多项式拟合）
+- **生成示例零件**：`工具 → 生成示例钢轨` / `生成示例枕木`，在当前工作区摆放一个示例长方体（钢轨 2.4×2.8×8、枕木 32×4×3.5，居中于当前格式对称点），尺寸参考 `test/sample_parts/` 的部件，可作零件使用或仅作尺寸参考
 
 ## 技术栈
 
@@ -169,22 +170,6 @@ npm run build
 - **纹理**：左轨 / 右轨 / 枕木元素应分别贴有自己的纹理（纹理列表里有导入的零件贴图，UV 编辑器可查看）。
 - **传送门/交叉**：`teleport*` 分组含直轨（导入 `portal_track` 则铺它，否则用零件默认纹理）+ 左右两个覆层块 `teleport_left` / `teleport_right`（导入 `portal_track_mip` 才生成，包裹枕木半边、贴 mip、不含钢轨）；都未导入时与 `z_ortho` / `x_ortho` 一致。`cross_*` 分组含交叉元素。
 - **轨距换算**：`工具 → 轨距换算`，输入 1435 → 应得 ≈0.755；输入 1600 → ≈0.965。
-
-## 轨道尺寸参考来源
-
-生成器的几何参数提取自 Create 官方源码仓库（`Creators-of-Create/Create`, mc1.20.1/dev 分支）
-与 `assets/tracks/`（Kuayue mod）参考资产：
-
-- `assets/tracks/standard/models/block/track/standard/diag_template.json` — 45° 斜轨旋转方案
-- `assets/tracks/standard/models/block/track/standard/ascending_template.json` — 上升坡度旋转方案
-- `assets/tracks/standard/models/block/track/standard/x_ortho.json` — 直轨布局
-- `assets/tracks/standard/models/block/track/standard/cross_ortho.json` — 正交交叉
-- `assets/tracks/standard/models/block/track/standard/tie.obj` / `segment_left.obj` / `segment_right.obj` — 弯道渲染基础模型（生成工作区里的 `tie` / `segment_left` / `segment_right` 三个分组对应）
-- Create 源码 `TrackModel.java` — 上升轨道的程序化变换（垂直偏移 -0.25、绕 Z 旋转坡度角）
-
-## 提交到插件商店（可选）
-
-如需公开发布，将插件提交到 [blockbench-plugins](https://github.com/JannisX11/blockbench-plugins) 仓库，按 [README 要求](https://github.com/JannisX11/blockbench-plugins#readme) 在 `/plugins` 下添加插件文件并更新 `plugins.json`。
 
 ## 官方文档
 

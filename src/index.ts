@@ -16,6 +16,7 @@ import { runGenerateWizard, injectDialogStyles, disposeDialogStyles } from './ui
 import { runGaugeConverter, disposeGaugeStyles } from './ui/gauge';
 import { buildAllShapes, buildBaseParts } from './build/assembly';
 import { runTrackExport, injectExportStyles, disposeExportStyles } from './build/export';
+import { createExampleCube } from './build/workspace';
 import { t, loadTranslationsFromDisk } from './i18n';
 import { DEFAULT_FIT, formatFit, gaugeMMToScale, mmToInch, pxToMM, scaleForPx } from './logic/gauge';
 
@@ -126,6 +127,36 @@ registerPlugin('create_track_gen', {
 		});
 		toolsMenu?.addAction(exportAction);
 		knownActions.push(exportAction);
+
+		// Example parts: drop a plain reference cube (sized after test/sample_parts) into the current
+		// workspace, so the user can eyeball the rail / tie dimensions or use them as generation parts
+		const exampleRailAction = new Action('create_track_gen.example_rail', {
+			name: t('ctg.action.example_rail.name'),
+			description: t('ctg.action.example_rail.desc'),
+			icon: 'cube',
+			click: () => {
+				Undo.initEdit({ outliner: true });
+				createExampleCube('rail');
+				Undo.finishEdit(t('ctg.undo.example_rail'), { outliner: true });
+				Canvas.updateView({ selection: true });
+			},
+		});
+		toolsMenu?.addAction(exampleRailAction);
+		knownActions.push(exampleRailAction);
+
+		const exampleTieAction = new Action('create_track_gen.example_tie', {
+			name: t('ctg.action.example_tie.name'),
+			description: t('ctg.action.example_tie.desc'),
+			icon: 'grid_view',
+			click: () => {
+				Undo.initEdit({ outliner: true });
+				createExampleCube('tie');
+				Undo.finishEdit(t('ctg.undo.example_tie'), { outliner: true });
+				Canvas.updateView({ selection: true });
+			},
+		});
+		toolsMenu?.addAction(exampleTieAction);
+		knownActions.push(exampleTieAction);
 	},
 	onunload() {
 		for (const action of knownActions) {

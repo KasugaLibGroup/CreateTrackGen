@@ -10,6 +10,7 @@
  */
 
 import type { SourceTexture } from '../logic/types';
+import { examplePartBox } from '../logic/parts';
 import { t } from '../i18n';
 
 /** Imports a texture into the current project from a data URL */
@@ -77,4 +78,20 @@ export function createTrackWorkspace(
 		t.remove(true);
 	}
 	return importSourceTextures(textures);
+}
+
+/**
+ * Drops an example rail / tie cube into the current workspace (the "Generate Example Rail/Tie" tools).
+ * The cube is a plain box sized after test/sample_parts and centered at the current format's symmetry
+ * point (Java (8,8), others (0,0)), so it lands visibly on the canvas. `.init()` adds it to the
+ * project root; the caller wraps it in Undo.
+ */
+export function createExampleCube(kind: 'rail' | 'tie'): Cube {
+	const format = (Project as any).format?.id as string | undefined;
+	const { from, to } = examplePartBox(kind, format);
+	return new Cube({
+		name: kind === 'rail' ? t('ctg.example.rail.name') : t('ctg.example.tie.name'),
+		from,
+		to,
+	}).init();
 }

@@ -535,12 +535,14 @@ assert.strictEqual(registered.data.variant, 'both');
 // i18n 磁盘加载：onload 读取了插件目录旁的 lang/zh.json，覆盖了内置的 ctg.ok
 assert.strictEqual(tl('ctg.ok'), '确定-磁盘覆盖', `❌ 应从磁盘读取 lang/zh.json 覆盖翻译，实际 ${tl('ctg.ok')}`);
 
-// 菜单注册了三个 Action：生成 + 换算 + 导出
-assert.strictEqual(addedActions.length, 3, '❌ 应注册 3 个 Action（生成 + 换算 + 导出）');
-const [genAction, gaugeAction, exportAction] = addedActions;
+// 菜单注册了五个 Action：生成 + 换算 + 导出 + 示例钢轨 + 示例枕木
+assert.strictEqual(addedActions.length, 5, '❌ 应注册 5 个 Action（生成 + 换算 + 导出 + 示例钢轨 + 示例枕木）');
+const [genAction, gaugeAction, exportAction, exampleRailAction, exampleTieAction] = addedActions;
 assert.strictEqual(genAction.id, 'create_track_gen.generate');
 assert.strictEqual(gaugeAction.id, 'create_track_gen.gauge');
 assert.strictEqual(exportAction.id, 'create_track_gen.export');
+assert.strictEqual(exampleRailAction.id, 'create_track_gen.example_rail');
+assert.strictEqual(exampleTieAction.id, 'create_track_gen.example_tie');
 
 // 轨距换算独立入口：对话框（英寸/毫米/像素 + 只读输出值联动）
 gaugeAction.click();
@@ -574,6 +576,22 @@ gaugeAction.click();
 	assert(Math.abs(g.mm - 1600) < 1, `❌ 62.9921in → mm 应 ≈1600，实际 ${g.mm}`);
 }
 console.log('   轨距换算 → 英寸/毫米/像素联动 + 只读输出值 ✓');
+
+// 示例零件工具：在当前工作区摆放示例长方体（初始 Project.format = java_block → 对称点 (8,8)）
+{
+	const cubesBefore = createdCubes.length;
+	exampleRailAction.click();
+	assert.strictEqual(createdCubes.length, cubesBefore + 1, '❌ 示例钢轨应创建一个 cube');
+	const railCube = createdCubes[createdCubes.length - 1];
+	assert.deepStrictEqual(railCube.from, [6.8, 0, 4], `❌ 示例钢轨 from 应参考 test_rail（居中 (8,8)），实际 ${railCube.from}`);
+	assert.deepStrictEqual(railCube.to, [9.2, 2.8, 12], `❌ 示例钢轨 to 应参考 test_rail（居中 (8,8)），实际 ${railCube.to}`);
+	exampleTieAction.click();
+	assert.strictEqual(createdCubes.length, cubesBefore + 2, '❌ 示例枕木应创建一个 cube');
+	const tieCube = createdCubes[createdCubes.length - 1];
+	assert.deepStrictEqual(tieCube.from, [-8, 0, 6.25], `❌ 示例枕木 from 应参考 test_tie（居中 (8,8)），实际 ${tieCube.from}`);
+	assert.deepStrictEqual(tieCube.to, [24, 4, 9.75], `❌ 示例枕木 to 应参考 test_tie（居中 (8,8)），实际 ${tieCube.to}`);
+}
+console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕木长方体 ✓');
 
 // 生成流程：单页对话框 → 新建工作区 + 导入纹理 + 生成形状（异步）
 (async () => {
@@ -975,22 +993,41 @@ console.log('   轨距换算 → 英寸/毫米/像素联动 + 只读输出值 �
 	assert(lastMessageBox && lastMessageBox.title === '导出完成', '❌ 导出完成后应弹出汇总');
 	console.log('   导出 4 种模式（经典 / 新 Java / OBJ / 基岩版）→ 判定 + 回退 + 结构 ✓');
 
+	// ── 场景 E：自由模型工作区导出强制 OBJ（mode 锁定为 obj，setMode 无效）──
+	Project.format = { id: 'free' };
+	Project.elements = [trackParent];
+	Project.name = 'track';
+	exportAction.click();
+	const dlgE = lastDialog;
+	assert(dlgE, '❌ 自由模型工作区也应打开导出对话框');
+	const drvE = dlgE.config._driver;
+	assert.strictEqual(drvE.getState().mode, 'obj', '❌ 自由模型工作区导出模式应强制为 obj');
+	drvE.setMode('classic_java');
+	assert.strictEqual(drvE.getState().mode, 'obj', '❌ 自由模型工作区 setMode 应被锁定为 obj');
+	// 直接走 confirm 也不应改变模式（且取消，不实际写文件）
+	dlgE.config.onCancel();
+	Project.format = { id: 'java_block' };
+	console.log('   自由模型工作区 → 导出仅允许 OBJ ✓');
+
 	// 卸载清理
 	unloadHooks.forEach((fn) => fn && fn());
 	assert(genAction.deleted, '❌ onunload 应删除生成 Action');
 	assert(gaugeAction.deleted, '❌ onunload 应删除换算 Action');
 	assert(exportAction.deleted, '❌ onunload 应删除导出 Action');
+	assert(exampleRailAction.deleted, '❌ onunload 应删除示例钢轨 Action');
+	assert(exampleTieAction.deleted, '❌ onunload 应删除示例枕木 Action');
 
 	console.log('✅ 冒烟测试通过');
 	console.log('   插件 ID:', registered.id);
 	console.log('   注册 Action:', addedActions.map((a) => a.id).join(', '));
 	console.log('   轨距换算 1435mm → ~0.755 ✓');
 	console.log('   单页配置 → 右轨「从第一个模型对称」镜像左轨 ✓');
+	console.log('   示例零件工具 → 示例钢轨 / 示例枕木长方体 ✓');
 	console.log('   生成 → 新工作区「track」(64×64)，纹理已应用 ✓');
 	console.log('   弯道基础分组 → tie / segment_left / segment_right 挂到轨道大组下 ✓');
 	console.log('   选择一个标签页 → 从该标签页提取选中元素 ✓');
 	console.log('   零件含 mesh 组 → 新工作区为自由模型，基础分组含 mesh ✓');
 	console.log('   传送门覆层 → 导入 2 张纹理（track 铺整体 / mip 贴覆层块），teleport 叠加左右 2 个覆层 ✓');
-	console.log('   导出轨道模型 → Create 命名规范模型 + blockstates + 纹理 ✓');
+	console.log('   导出轨道模型 → Create 命名规范模型 + blockstates + 纹理（自由模型强制 OBJ）✓');
 	console.log('   onunload 已清理 Action ✓');
 })();

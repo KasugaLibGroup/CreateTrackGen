@@ -91,6 +91,30 @@ export function outputOffsetForFormat(format: string | undefined): Vec3 {
 }
 
 /**
+ * Whether a model format is the generic / free model. The free model's valid id is 'free'; 'generic'
+ * is the legacy name that older versions used (and which resolves to the free model). A workspace of
+ * this format keeps origin-centered, non-canvas-aligned geometry — the Java/Bedrock block formats
+ * can't express it faithfully, so export is restricted to OBJ.
+ */
+export function isFreeModelFormat(format: string | undefined): boolean {
+	return format === 'free' || format === 'generic';
+}
+
+/**
+ * The example rail / tie part geometry — a plain box sized after test/sample_parts
+ * (test_rail: 2.4 wide × 2.8 tall × 8 long; test_tie: ~32 wide × ~4 tall × ~3.5 deep), centered at
+ * the format's symmetry point (Java (8,8), others (0,0)), bottom face at y=0. Used by the
+ * "Generate Example Rail/Tie" tools to drop a reference cube into the current workspace.
+ */
+export function examplePartBox(kind: 'rail' | 'tie', format?: string): { from: Vec3; to: Vec3 } {
+	const [cx, , cz] = symmetryPointForFormat(format);
+	if (kind === 'rail') {
+		return { from: [cx - 1.2, 0, cz - 4], to: [cx + 1.2, 2.8, cz + 4] };
+	}
+	return { from: [cx - 16, 0, cz - 1.75], to: [cx + 16, 4, cz + 1.75] };
+}
+
+/**
  * Converts a single element to a CubeSpec.
  * .bbmodel rotation has two forms, both supported:
  *  - array form [rx, ry, rz] (Blockbench's standard export format), origin as a sibling field of rotation;

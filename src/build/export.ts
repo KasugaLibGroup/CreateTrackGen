@@ -41,6 +41,7 @@ import {
 	TRACK_MODEL_FILES,
 } from '../logic/export';
 import type { CubeFaceDirection, Vec3 } from '../logic/types';
+import { isFreeModelFormat } from '../logic/parts';
 import { t } from '../i18n';
 import type { DialogOptions } from 'blockbench-types/generated/interface/dialog';
 
@@ -455,12 +456,18 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
  * Export configuration dialog (single large frame, two columns: export config on the left + each
  * texture's export path on the right). All path fields are editable text boxes + "Browse…" buttons,
  * pre-filled with default-generated paths. Returns null when cancelled.
+ *
+ * opts.forceObj locks the export mode to OBJ (used when the workspace is a free/generic model, whose
+ * origin-centered, non-canvas-aligned geometry can't be expressed by the Java/Bedrock block formats):
+ * the mode selector is disabled, only the OBJ entry is offered, and a hint explains why.
  */
 export function promptExportOptions(
 	defaultTrackId: string,
-	textures: ExportTexture[]
+	textures: ExportTexture[],
+	opts?: { forceObj?: boolean }
 ): Promise<ExportOptions | null> {
 	return new Promise((resolve) => {
+		const forceObj = opts?.forceObj ?? false;
 		let settled = false;
 		const finish = (v: ExportOptions | null) => {
 			if (settled) return;
@@ -469,9 +476,9 @@ export function promptExportOptions(
 		};
 
 		// Form state (initial: default mode classic_java + default namespace create + default root +
-		// default resource paths)
+		// default resource paths; forceObj starts locked at obj)
 		const state: ExportFormState = {
-			mode: 'classic_java',
+			mode: forceObj ? 'obj' : 'classic_java',
 			namespace: 'create',
 			trackId: defaultTrackId,
 			root: defaultExportRoot(),
@@ -494,6 +501,7 @@ export function promptExportOptions(
 		/** Validates and hands the legal result to finish; on invalid input pops a message and keeps the dialog open */
 		const confirmExport = (): boolean => {
 			syncFromDom(); // fallback: adopt the values the user actually typed in the DOM inputs
+			if (forceObj) state.mode = 'obj'; // free/generic workspace: only OBJ export is allowed
 			const namespace = state.namespace.trim();
 			const trackId = state.trackId.trim();
 			const valid = /^[a-z0-9_]+$/;
@@ -536,7 +544,9 @@ export function promptExportOptions(
 
 		const driver: ExportDriver = {
 			setMode(mode) {
-				state.mode = mode;
+				// forceObj ignores any other mode (see confirmExport); kept in sync so the smoke driver
+				// reflects the locked state too
+				state.mode = forceObj ? 'obj' : mode;
 				recomputeDefaults(state);
 				if (dialogNode) renderExportPaths(dialogNode, state);
 			},
@@ -655,13 +665,24 @@ export function promptExportOptions(
 
 			const modeSelect = el('select', 'ctg-exp-select');
 			modeSelect.dataset.export = 'mode';
-			for (const m of EXPORT_MODES) {
-				const opt = el('option', undefined, m.label) as HTMLOptionElement;
-				opt.value = m.id;
+			if (forceObj) {
+				// Free/generic workspace: the Java/Bedrock block formats can't express the geometry, so
+				// only OBJ is offered and the selector is locked
+				const objMode = EXPORT_MODES.find((m) => m.id === 'obj')!;
+				const opt = el('option', undefined, objMode.label) as HTMLOptionElement;
+				opt.value = 'obj';
 				modeSelect.append(opt);
+				modeSelect.value = 'obj';
+				modeSelect.disabled = true;
+			} else {
+				for (const m of EXPORT_MODES) {
+					const opt = el('option', undefined, m.label) as HTMLOptionElement;
+					opt.value = m.id;
+					modeSelect.append(opt);
+				}
 			}
 			modeSelect.value = state.mode;
-			left.append(fieldRow(t('ctg.export.mode'), modeSelect, t('ctg.export.mode.desc')));
+			left.append(fieldRow(t('ctg.export.mode'), modeSelect, forceObj ? t('ctg.export.mode.forced_obj_hint') : t('ctg.export.mode.desc')));
 			left.append(fieldRow(t('ctg.export.namespace'), textField('namespace', state.namespace), t('ctg.export.namespace.desc')));
 			left.append(fieldRow(t('ctg.export.track_id'), textField('trackid', state.trackId), t('ctg.export.track_id.desc')));
 
@@ -961,7 +982,10 @@ export async function runTrackExport(): Promise<void> {
 	const subgroups = (trackGroup.children ?? []).filter((g) => g instanceof Group) as Group[];
 	// Collect textures first: the export dialog needs to list each texture's directory
 	const { infos: texInfos, keyOf } = collectTexturesGlobal(subgroups);
-	const options = await promptExportOptions(defaultTrackId, texInfos);
+	// A free/generic-model workspace keeps origin-centered, non-canvas-aligned geometry that the
+	// Java/Bedrock block formats can't express — restrict the dialog to OBJ export only
+	const forceObj = isFreeModelFormat((Project as any).format?.id as string | undefined);
+	const options = await promptExportOptions(defaultTrackId, texInfos, { forceObj });
 	if (!options) {
 		Blockbench.showQuickMessage(t('ctg.cancelled'));
 		return;
@@ -974,6 +998,7 @@ export async function runTrackExport(): Promise<void> {
 			options.mode !== 'bedrock' && format && format !== 'java_block' && format !== 'java_item'
 				? t('ctg.export.format_note', format)
 				: '';
+		const forcedObjNote = forceObj ? t('ctg.export.mode.forced_obj_note') : '';
 		// Deduplicated texture resource paths (they may differ)
 		const distinctTexturePaths = [...new Set(Object.values(options.texturePaths))];
 		showExportResult({
@@ -996,7 +1021,7 @@ export async function runTrackExport(): Promise<void> {
 				t('ctg.export.done_condition', modeMeta?.description ?? ''),
 				skipped.length ? t('ctg.export.done_skipped', skipped.join(', ')) : '',
 			].filter(Boolean),
-			notes: [...warnings, formatNote].filter(Boolean),
+			notes: [...warnings, formatNote, forcedObjNote].filter(Boolean),
 		});
 	} catch (e: any) {
 		Blockbench.showMessageBox({

@@ -25,7 +25,6 @@ import {
 	buildBlockstates,
 	blockstatesFileName,
 	buildJavaModelJson,
-	buildObj,
 	buildObjReferenceJson,
 	cleanGroupName,
 	EXPORT_MODES,
@@ -38,6 +37,7 @@ import {
 	groupNeedsObj,
 	modelFileName,
 	textureResourceName,
+	textureResourcePath,
 	TRACK_MODEL_FILES,
 } from '../logic/export';
 import type { CubeFaceDirection, Vec3 } from '../logic/types';
@@ -278,6 +278,11 @@ export interface ExportOptions {
 	mode: ExportMode;
 	namespace: string;
 	trackId: string;
+	/**
+	 * Mod loader for the OBJ reference JSON's loader field (forge → "forge:obj", neoforge →
+	 * "neoforge:obj", …). Default forge; editable because 1.20~1.21 straddles forge → neoforge.
+	 */
+	loader: string;
 	/** Export root (directory holding the resource pack's assets/{namespace}; everything is written here) */
 	root: string;
 	/**
@@ -301,6 +306,7 @@ export interface ExportDriver {
 	setMode(mode: ExportMode): void;
 	setNamespace(v: string): void;
 	setTrackId(v: string): void;
+	setLoader(v: string): void;
 	setRoot(v: string): void;
 	setModelPath(v: string): void;
 	setTexturePath(key: string, v: string): void;
@@ -475,12 +481,13 @@ export function promptExportOptions(
 			resolve(v);
 		};
 
-		// Form state (initial: default mode classic_java + default namespace create + default root +
-		// default resource paths; forceObj starts locked at obj)
+		// Form state (initial: default mode classic_java + default namespace create + default loader forge +
+		// default root + default resource paths; forceObj starts locked at obj)
 		const state: ExportFormState = {
 			mode: forceObj ? 'obj' : 'classic_java',
 			namespace: 'create',
 			trackId: defaultTrackId,
+			loader: 'forge',
 			root: defaultExportRoot(),
 			modelPath: '',
 			texturePaths: {},
@@ -504,6 +511,7 @@ export function promptExportOptions(
 			if (forceObj) state.mode = 'obj'; // free/generic workspace: only OBJ export is allowed
 			const namespace = state.namespace.trim();
 			const trackId = state.trackId.trim();
+			const loader = state.loader.trim();
 			const valid = /^[a-z0-9_]+$/;
 			if (!EXPORT_MODES.some((m) => m.id === state.mode)) {
 				errorBox(t('ctg.export.invalid_mode'));
@@ -515,6 +523,10 @@ export function promptExportOptions(
 			}
 			if (!valid.test(namespace) || !valid.test(trackId)) {
 				errorBox(t('ctg.export.invalid_chars'));
+				return false;
+			}
+			if (!loader || !valid.test(loader)) {
+				errorBox(t('ctg.export.invalid_loader'));
 				return false;
 			}
 			if (!state.root || !state.modelPath || Object.values(state.texturePaths).some((p) => !p)) {
@@ -535,6 +547,7 @@ export function promptExportOptions(
 				mode: state.mode,
 				namespace,
 				trackId,
+				loader,
 				root: state.root,
 				modelPath: state.modelPath,
 				texturePaths: { ...state.texturePaths },
@@ -557,6 +570,9 @@ export function promptExportOptions(
 				state.trackId = v;
 				recomputeDefaults(state);
 				if (dialogNode) renderExportPaths(dialogNode, state);
+			},
+			setLoader(v) {
+				state.loader = v;
 			},
 			setRoot(v) {
 				state.root = v;
@@ -685,6 +701,7 @@ export function promptExportOptions(
 			left.append(fieldRow(t('ctg.export.mode'), modeSelect, forceObj ? t('ctg.export.mode.forced_obj_hint') : t('ctg.export.mode.desc')));
 			left.append(fieldRow(t('ctg.export.namespace'), textField('namespace', state.namespace), t('ctg.export.namespace.desc')));
 			left.append(fieldRow(t('ctg.export.track_id'), textField('trackid', state.trackId), t('ctg.export.track_id.desc')));
+			left.append(fieldRow(t('ctg.export.loader'), textField('loader', state.loader), t('ctg.export.loader.desc')));
 
 			wrap.append(left);
 
@@ -731,7 +748,8 @@ export function promptExportOptions(
 						state.trackId = v;
 						recomputeDefaults(state);
 						renderExportPaths(node, state);
-					} else if (key === 'root') state.root = v;
+					} else if (key === 'loader') state.loader = v;
+					else if (key === 'root') state.root = v;
 					else if (key === 'model') {
 						state.modelPath = v;
 						state.dirty.model = true;
@@ -765,6 +783,8 @@ export function promptExportOptions(
 			if (ns != null) state.namespace = ns;
 			const tid = val('[data-export="trackid"]');
 			if (tid != null) state.trackId = tid;
+			const loader = val('[data-export="loader"]');
+			if (loader != null) state.loader = loader;
 			const root = val('[data-export="root"]');
 			if (root != null) state.root = root;
 			const model = val('[data-export="model"]');
@@ -814,6 +834,316 @@ export function promptExportOptions(
 	});
 }
 
+// ── OBJ (single merged mesh, built through Blockbench's mesh API + OBJ codec) ──
+
+/**
+ * OBJ export does not string-build the .obj and never post-processes the codec's text (no stripping of
+ * `o` lines — that corrupts the file). Instead each shape group's cubes + meshes are merged into a
+ * single Blockbench Mesh, following the same steps as Blockbench's own merge-meshes tool:
+ *   1. every cube is converted to mesh geometry (`getGlobalVertexPositions` — the corner mapping
+ *      Blockbench's OBJ codec itself uses — so rotation + origin + ancestor bones are all baked);
+ *   2. every mesh's vertices are re-baked into world space (own origin/rotation + ancestor bones),
+ *      matching the `v` lines the OBJ codec would emit for it;
+ *   3. the merged mesh is pulled out to the outliner root — no bone/folder wraps it, so its THREE
+ *      node's matrixWorld is identity and the baked vertices export as-is (equivalent to "keep pulling
+ *      the merged mesh out of bones until no bones and exactly one mesh remain");
+ *   4. the single root mesh is exported with Blockbench's own OBJ codec (`Codecs.obj.compile`).
+ *
+ * The codec walks the THREE scene and resolves each node back to its element via
+ * `OutlinerNode.uuids[node.name]` (scene nodes are named by element uuid). A runtime-built mesh only
+ * gets that scene node after its `preview_controller.updateAll` runs — `init()` registers the uuid and
+ * adds the element to the tree but never creates the node, so without that call the codec can never
+ * reach the merged mesh and the .obj comes out empty. The merged mesh is added to the project, its
+ * scene node is built, and every other element is marked non-exportable — the same partial-export
+ * mechanism `Codec.patchCollectionExport` uses — producing an .obj with exactly one `o` object.
+ * Everything is restored in a finally block.
+ */
+
+/** Cube's 8 corner picks (0-7) — matching Blockbench's getGlobalVertexPositions order */
+const OBJ_CUBE_VERTEX_PICK: [number, number, number][] = [
+	[1, 1, 1], [1, 1, 0], [1, 0, 1], [1, 0, 0],
+	[0, 1, 0], [0, 1, 1], [0, 0, 0], [0, 0, 1],
+];
+
+/** Face direction → 1-based corner indices (matching Blockbench's OBJ exporter f-line order) */
+const OBJ_FACE_CORNERS: Record<CubeFaceDirection, number[]> = {
+	north: [2, 5, 7, 4],
+	east: [1, 2, 4, 3],
+	south: [6, 1, 3, 8],
+	west: [5, 6, 8, 7],
+	up: [5, 2, 1, 6],
+	down: [8, 3, 4, 7],
+};
+
+/**
+ * Standard right-hand rotation, matching how Blockbench renders `Cube.rotation` (THREE Euler XYZ order,
+ * Y following the standard R_y: +Z → +X). NOT the plugin's rotateVec, whose Y direction is reversed.
+ */
+function standardRotate(v: Vec3, rot: Vec3): Vec3 {
+	let [x, y, z] = v;
+	const rad = (d: number) => (d * Math.PI) / 180;
+	const ax = rad(rot[0]);
+	let [c, s] = [Math.cos(ax), Math.sin(ax)];
+	[y, z] = [y * c - z * s, y * s + z * c];
+	const ay = rad(rot[1]);
+	[c, s] = [Math.cos(ay), Math.sin(ay)];
+	[x, z] = [x * c + z * s, -x * s + z * c];
+	const az = rad(rot[2]);
+	[c, s] = [Math.cos(az), Math.sin(az)];
+	[x, y] = [x * c - y * s, x * s + y * c];
+	return [x, y, z];
+}
+
+/** A cube's 8 world-space corners (rotation + origin baked) — fallback when getGlobalVertexPositions is unavailable */
+function cubeWorldCorners(cube: Cube): Vec3[] {
+	return OBJ_CUBE_VERTEX_PICK.map((pick) => {
+		const v: Vec3 = [pick[0] ? cube.to[0] : cube.from[0], pick[1] ? cube.to[1] : cube.from[1], pick[2] ? cube.to[2] : cube.from[2]];
+		const origin = cube.origin ?? [0, 0, 0];
+		const rel: Vec3 = [v[0] - origin[0], v[1] - origin[1], v[2] - origin[2]];
+		const r = cube.rotation && cube.rotation.some((a) => a !== 0) ? standardRotate(rel, cube.rotation) : rel;
+		return [r[0] + origin[0], r[1] + origin[1], r[2] + origin[2]];
+	});
+}
+
+/**
+ * Bakes an element's local point into world space by applying the element's own origin/rotation then
+ * every ancestor group's origin/rotation (leaf → root) — the transform chain Blockbench's preview
+ * applies (each element rotates about its origin; children live in the parent's space). Mirrors what
+ * the OBJ codec's mesh branch produces (`vertex × matrixWorld`), and matches getGlobalVertexPositions
+ * by measuring relative to the scene root (scene.position is subtracted).
+ */
+function bakeWorldTransform(el: { origin?: Vec3; rotation?: Vec3; parent?: unknown }, v: Vec3): Vec3 {
+	const chain: { origin: Vec3; rotation: Vec3 }[] = [];
+	let cur: unknown = el;
+	while (cur && typeof cur === 'object') {
+		const o = (cur as { origin?: Vec3 }).origin;
+		const r = (cur as { rotation?: Vec3 }).rotation;
+		chain.push({
+			origin: o && o.length === 3 ? [...o] : [0, 0, 0],
+			rotation: r && r.length === 3 ? [...r] : [0, 0, 0],
+		});
+		const parent = (cur as { parent?: unknown }).parent;
+		cur = parent && typeof parent === 'object' ? parent : null;
+	}
+	let out: Vec3 = [...v];
+	for (const { origin, rotation } of chain) {
+		const rel: Vec3 = [out[0] - origin[0], out[1] - origin[1], out[2] - origin[2]];
+		const r = rotation.some((a) => a !== 0) ? standardRotate(rel, rotation) : rel;
+		out = [r[0] + origin[0], r[1] + origin[1], r[2] + origin[2]];
+	}
+	const scene = (globalThis as { scene?: { position?: { x?: number; y?: number; z?: number } } }).scene;
+	const sp = scene?.position;
+	if (sp && (sp.x || sp.y || sp.z)) out = [out[0] - (sp.x ?? 0), out[1] - (sp.y ?? 0), out[2] - (sp.z ?? 0)];
+	return out;
+}
+
+/**
+ * Appends one Cube's 8 corners + textured faces to the merged mesh as quads, reusing Blockbench's own
+ * corner order / per-corner UV layout so the serialized mesh matches what exporting the cube directly
+ * would produce (rotation is baked into the corner positions, so the merged mesh needs no transform).
+ */
+function appendCubeToMerged(merged: Mesh, cube: Cube): void {
+	const gvp = (cube as any).getGlobalVertexPositions as (() => Vec3[]) | undefined;
+	const corners: Vec3[] = typeof gvp === 'function' ? gvp.call(cube) : cubeWorldCorners(cube);
+	const cornerKeys: string[] = corners.map((p) => merged.addVertices(p)[0]);
+	for (const [dir, rawFace] of Object.entries((cube as any).faces ?? {})) {
+		const f = rawFace as any;
+		if (!f || f.enabled === false || f.texture === null) continue;
+		const O = OBJ_FACE_CORNERS[dir as CubeFaceDirection];
+		if (!O) continue;
+		const uv = f.uv ?? [0, 0, 16, 16];
+		// The 4 per-corner UVs (raw px) in Blockbench's OBJ vt order, rotated by face.rotation the same way
+		let out: [number, number][] = [
+			[uv[0], uv[1]],
+			[uv[2], uv[1]],
+			[uv[2], uv[3]],
+			[uv[0], uv[3]],
+		];
+		let rot = f.rotation || 0;
+		while (rot > 0) {
+			out.unshift(out.pop()!);
+			rot -= 90;
+		}
+		// Face winding = reversed OBJ corner order (outward normal); per-corner UVs follow the vt order
+		const vertices = [O[3] - 1, O[2] - 1, O[1] - 1, O[0] - 1].map((i) => cornerKeys[i]);
+		const uvMap: Record<string, [number, number]> = {};
+		uvMap[cornerKeys[O[0] - 1]] = out[0];
+		uvMap[cornerKeys[O[1] - 1]] = out[1];
+		uvMap[cornerKeys[O[2] - 1]] = out[2];
+		uvMap[cornerKeys[O[3] - 1]] = out[3];
+		merged.addFaces(new MeshFace(merged, { vertices, uv: uvMap, texture: f.texture }));
+	}
+}
+
+/** Copies one Mesh's vertices + faces into the merged mesh, remapping vertex keys (per-vertex UV follows) */
+function appendMeshToMerged(merged: Mesh, source: Mesh): void {
+	const keyMap = new Map<string, string>();
+	for (const [vkey, v] of Object.entries((source as any).vertices ?? {})) {
+		// Re-bake the vertex to world space (own origin/rotation + ancestor bones), so the merged
+		// root mesh's coordinates equal what the OBJ codec would emit for the source mesh.
+		keyMap.set(vkey, merged.addVertices(bakeWorldTransform(source, v as [number, number, number]))[0]);
+	}
+	for (const rawFace of Object.values((source as any).faces ?? {})) {
+		const f = rawFace as any;
+		if (!f || f.vertices.length < 3) continue;
+		let uv: any = f.uv;
+		if (uv && typeof uv === 'object' && !Array.isArray(uv)) {
+			// addVertices assigns fresh vertex keys; remap the per-vertex uv object so MeshFace's
+			// per-vertex lookup doesn't miss every entry (same as specToMesh in assembly.ts)
+			const remapped: Record<string, [number, number]> = {};
+			for (const [vk, p] of Object.entries(uv as Record<string, any>)) {
+				remapped[keyMap.get(vk) ?? vk] = p;
+			}
+			uv = remapped;
+		}
+		merged.addFaces(
+			new MeshFace(merged, {
+				vertices: (f.vertices as string[]).map((vk) => keyMap.get(vk) ?? vk),
+				uv: uv as Record<string, [number, number]> | undefined,
+				texture: f.texture,
+			})
+		);
+	}
+}
+
+/**
+ * Merges a shape group's whole subtree (cubes + meshes, recursing into nested folder/bone groups) into
+ * a single Mesh, using the official Blockbench mesh API (`new Mesh({ vertices: {} })` +
+ * `addVertices` + `addFaces(new MeshFace(...))` — the same pattern as Blockbench's OBJ importer /
+ * merge-meshes tool). Cubes are converted via their global corner positions and meshes are world-baked,
+ * so the merged mesh is already in final world space. Its origin/rotation stay [0,0,0]: the mesh sits
+ * at the outliner root with no bone wrapping it, so its scene-node matrixWorld is identity and the
+ * codec exports the vertices as-is (this is the "pull the merged mesh out of every folder/bone, then
+ * remove the bones" step of Blockbench's merge — the bones are simply not kept).
+ */
+function mergeGroupToMesh(group: Group): Mesh {
+	// vertices:{} is required — without it the Mesh constructor falls back to a default 2×2×2 cube.
+	// The mesh name is the cleaned shape id (strips the 「（…）」display suffix), so the OBJ `o` line
+	// carries a clean name with no parentheses / trailing spaces — same id as the .obj file name.
+	const merged = new Mesh({ name: cleanGroupName(group.name) || 'mesh', vertices: {} });
+	const visit = (el: unknown): void => {
+		if (el instanceof Cube) appendCubeToMerged(merged, el);
+		else if (el instanceof Mesh) appendMeshToMerged(merged, el);
+		else if (el instanceof Group) (el.children ?? []).forEach(visit);
+	};
+	(group.children ?? []).forEach(visit);
+	merged.origin = [0, 0, 0];
+	merged.rotation = [0, 0, 0];
+	return merged;
+}
+
+/** Builds the Create-compatible MTL (map_Kd = resource path) for the textures the merged mesh uses */
+function buildObjMtl(
+	merged: Mesh,
+	opts: { namespace: string; trackId: string; texInfos: ExportTexture[]; keyOf: Map<Texture, string>; texturePathOf: Record<string, string> }
+): string {
+	const used = new Set<string>();
+	for (const f of Object.values((merged as any).faces ?? {})) {
+		const tex = (f as any).getTexture?.();
+		if (tex && typeof tex === 'object' && typeof tex.uuid === 'string') used.add(tex.uuid);
+	}
+	const lines = ['# Made in Blockbench'];
+	for (const [tex, key] of opts.keyOf) {
+		if (!used.has(tex.uuid)) continue;
+		const info = opts.texInfos.find((i) => i.key === key);
+		const resName = info?.resName ?? tex.name ?? 'texture';
+		lines.push(`newmtl m_${tex.uuid}`, `map_Kd ${textureResourcePath(opts.namespace, opts.trackId, resName, opts.texturePathOf[key])}`);
+	}
+	lines.push('newmtl none');
+	return lines.join('\n');
+}
+
+/**
+ * Builds the merged mesh's THREE scene node. Blockbench's OBJ codec walks the THREE scene and resolves
+ * each node back to its element via `OutlinerNode.uuids[node.name]` (scene nodes are named by element
+ * uuid). `Mesh.init()` registers `OutlinerNode.uuids[uuid]` and adds the element to the outliner tree,
+ * but the scene node only exists after the element's `preview_controller.updateAll` runs (`setup()`
+ * creates `Project.nodes_3d[uuid]` and parents it under `Project.model_3d`). Without this call the
+ * codec can never reach the merged mesh, so the .obj comes out empty — the bug that used to make the
+ * export look "broken". Falls back to manually registering a node when no preview_controller exists.
+ */
+function registerMergedMeshForCodec(merged: Mesh): void {
+	const pc = (merged as any).preview_controller as { updateAll?: (el: Mesh) => unknown } | undefined;
+	if (pc && typeof pc.updateAll === 'function') {
+		try {
+			pc.updateAll(merged);
+			return;
+		} catch {
+			// fall through to the manual registration below
+		}
+	}
+	const g = globalThis as { Project?: any; THREE?: any };
+	const nodes3d = g.Project?.nodes_3d as Record<string, unknown> | undefined;
+	const root = g.Project?.model_3d as { add?: (n: unknown) => void } | undefined;
+	const THREE = g.THREE as any;
+	if (nodes3d && root && typeof root.add === 'function' && THREE?.Mesh && THREE?.BufferGeometry && !nodes3d[merged.uuid]) {
+		const node = new THREE.Mesh(new THREE.BufferGeometry());
+		node.name = merged.uuid;
+		nodes3d[merged.uuid] = node;
+		root.add(node);
+	}
+}
+
+/**
+ * Serializes one shape group as a single merged OBJ mesh through Blockbench's own OBJ codec:
+ *  1. mergeGroupToMesh merges the group's whole subtree (cubes + meshes, nested folders included) into
+ *     one Mesh via the official mesh API — cubes through their global corners, meshes world-baked, so
+ *     the merged mesh is a single root-level mesh with no bones around it;
+ *  2. the merged mesh is added to the project and its THREE scene node is built (registerMergedMeshForCodec)
+ *     and every other element is marked non-exportable — the same partial-export mechanism
+ *     Codec.patchCollectionExport uses — so the codec's scene traversal emits exactly one `o` object;
+ *  3. the project is restored in a finally block and a Create-compatible MTL is returned (Blockbench's
+ *     own MTL references texture file names, which the forge:obj loader can't resolve to resource paths).
+ */
+export function exportGroupAsObj(opts: {
+	group: Group;
+	mtlName: string;
+	namespace: string;
+	trackId: string;
+	texInfos: ExportTexture[];
+	keyOf: Map<Texture, string>;
+	texturePathOf: Record<string, string>;
+}): { obj: string; mtl: string } {
+	const { group } = opts;
+	const codec = (globalThis as any).Codecs?.obj;
+	if (!codec || typeof codec.compile !== 'function') {
+		throw new Error(t('ctg.export.no_obj_codec'));
+	}
+	const merged = mergeGroupToMesh(group);
+	// OBJ `o` name = cleaned shape id (no display suffix with parentheses / spaces), matching the .obj file name
+	merged.name = cleanGroupName(group.name) || 'mesh';
+	// Add the merged mesh to the project (registers uuid + outliner root) and build its THREE scene
+	// node so the OBJ codec's scene traversal can reach it
+	merged.init();
+	registerMergedMeshForCodec(merged);
+	// Partial-export isolation: save every element's export flag, mark all non-exportable, keep `merged`
+	const saved = new Map<string, boolean>();
+	const all = [
+		...(((globalThis as any).Outliner?.elements as unknown[]) ?? []),
+		...(((globalThis as any).Group?.all as unknown[]) ?? []),
+	];
+	for (const node of all) {
+		const n = node as { uuid?: string; export?: unknown };
+		if (typeof n.export === 'boolean') {
+			saved.set(n.uuid ?? '', n.export);
+			n.export = false;
+		}
+	}
+	merged.export = true;
+	try {
+		const res = codec.compile({ mtl_name: opts.mtlName, all_files: true });
+		const obj: string = res && typeof res === 'object' ? (res.obj as string) : String(res);
+		return { obj, mtl: buildObjMtl(merged, opts) };
+	} finally {
+		for (const node of all) {
+			const n = node as { uuid?: string; export?: unknown };
+			const v = saved.get(n.uuid ?? '');
+			if (typeof v === 'boolean') n.export = v;
+		}
+		(merged as any).remove?.();
+	}
+}
+
 /**
  * Exports the groups under the track parent group according to mode into the configured directory:
  *  - Java (new_java / classic_java): element model JSON + textures; groups that can't be exported fall
@@ -830,7 +1160,7 @@ export function writeTrackExport(opts: ExportOptions & {
 	texInfos: ExportTexture[];
 	keyOf: Map<Texture, string>;
 }): { files: number; skipped: string[]; warnings: string[] } {
-	const { root, modelPath, texturePaths, namespace, trackId, subgroups, mode, texInfos, keyOf } = opts;
+	const { root, modelPath, texturePaths, namespace, trackId, loader, subgroups, mode, texInfos, keyOf } = opts;
 	const fs = scopedFs(root);
 	if (!fs) {
 		throw new Error(t('ctg.export.no_fs'));
@@ -843,9 +1173,6 @@ export function writeTrackExport(opts: ExportOptions & {
 	const modelDir = joinPath(root, `models/${modelPath}`);
 	/** A texture's write directory (absolute): root/textures/{texturePath}/ */
 	const textureDirOf = (key: string): string => joinPath(root, `textures/${texturePaths[key] ?? modelPath}`);
-
-	const sizeOf: Record<string, [number, number]> = {};
-	for (const tex of texInfos) sizeOf[tex.key] = [tex.width, tex.height];
 
 	const files: string[] = [];
 	const skipped: string[] = [];
@@ -867,12 +1194,14 @@ export function writeTrackExport(opts: ExportOptions & {
 
 		if (mode === 'obj' || groupNeedsObj(elements, mode)) {
 			// ── OBJ (single merged mesh) or fallback ──
+			// Merged into one Blockbench Mesh + serialized via Blockbench's OBJ codec (Codecs.obj.compile),
+			// so the .obj carries a single `o` object with all the group's cubes + meshes
 			const shape = file.replace(/\.json$/, '');
-			const objRes = buildObj({ elements, textures: shapeTexs, sizeOf, namespace, trackId, mtlName: `${shape}.mtl`, texturePathOf: texturePaths });
+			const objRes = exportGroupAsObj({ group, mtlName: `${shape}.mtl`, namespace, trackId, texInfos, keyOf, texturePathOf: texturePaths });
 			fs.mkdirSync(modelDir, { recursive: true });
 			fs.writeFileSync(joinPath(modelDir, `${shape}.obj`), objRes.obj);
 			fs.writeFileSync(joinPath(modelDir, `${shape}.mtl`), objRes.mtl);
-			fs.writeFileSync(joinPath(modelDir, file), JSON.stringify(buildObjReferenceJson({ namespace, trackId, shape, textures: shapeTexs, texturePathOf: texturePaths, modelPath }), null, '\t'));
+			fs.writeFileSync(joinPath(modelDir, file), JSON.stringify(buildObjReferenceJson({ namespace, trackId, loader, shape, textures: shapeTexs, texturePathOf: texturePaths, modelPath }), null, '\t'));
 			files.push(joinPath(modelDir, `${shape}.obj`), joinPath(modelDir, `${shape}.mtl`), joinPath(modelDir, file));
 			for (const tex of shapeTexs) writeTexturePng(fs, textureDirOf(tex.key), tex, files, warnings, writtenTextures);
 			if (mode === 'bedrock') {

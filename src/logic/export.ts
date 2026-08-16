@@ -25,7 +25,6 @@
  */
 
 import type { CubeFaceDirection, Vec3 } from './types';
-import { rotateVec } from './transform';
 import { t } from '../i18n';
 
 /** Export mode */
@@ -349,180 +348,17 @@ export function buildJavaModelJson(opts: {
 	return json;
 }
 
-// ── OBJ (single merged mesh, at the root) ───────────────────────────────────
-
-/** Cube's 8 corners (0-7): whether each coord takes from(0) or to(1) — matching Blockbench's getGlobalVertexPositions order */
-const OBJ_CUBE_VERTEX_PICK: [number, number, number][] = [
-	[1, 1, 1], [1, 1, 0], [1, 0, 1], [1, 0, 0],
-	[0, 1, 0], [0, 1, 1], [0, 0, 0], [0, 0, 1],
-];
-
-/** Face direction → the 4 corners forming it (1-based, indexing OBJ_CUBE_VERTEX_PICK) */
-const OBJ_FACE_CORNERS: Record<CubeFaceDirection, number[]> = {
-	north: [2, 5, 7, 4],
-	east: [1, 2, 4, 3],
-	south: [6, 1, 3, 8],
-	west: [5, 6, 8, 7],
-	up: [5, 2, 1, 6],
-	down: [8, 3, 4, 7],
-};
-
-/** The world coordinate of a cube's idx-th corner (px; includes the rotation about origin) */
-function objCorner(cube: ExportCubeData, idx: number): Vec3 {
-	const pick = OBJ_CUBE_VERTEX_PICK[idx];
-	const v: Vec3 = [pick[0] ? cube.to[0] : cube.from[0], pick[1] ? cube.to[1] : cube.from[1], pick[2] ? cube.to[2] : cube.from[2]];
-	if (!cube.rotation || cube.rotation.every((r) => r === 0)) return v;
-	const origin = cube.origin ?? [0, 0, 0];
-	const rel: Vec3 = [v[0] - origin[0], v[1] - origin[1], v[2] - origin[2]];
-	const r = rotateVec(rel, cube.rotation);
-	return [r[0] + origin[0], r[1] + origin[1], r[2] + origin[2]];
-}
-
-/** Face UV → 4 vt lines (pixels / texture size, v flipped to bottom; rotated 90° steps per face.rotation) */
-function objFaceVt(face: ExportFaceData, size: [number, number]): string[] {
-	const W = size[0] || 16;
-	const H = size[1] || 16;
-	const uv = face.uv ?? [0, 0, W, H];
-	const J = [
-		`vt ${uv[0] / W} ${1 - uv[1] / H}`,
-		`vt ${uv[2] / W} ${1 - uv[1] / H}`,
-		`vt ${uv[2] / W} ${1 - uv[3] / H}`,
-		`vt ${uv[0] / W} ${1 - uv[3] / H}`,
-	];
-	let a = face.rotation || 0;
-	while (a > 0) {
-		J.splice(0, 0, J.pop()!);
-		a -= 90;
-	}
-	return J;
-}
-
-/** Outward normal from three triangle points (f row order) */
-function triNormal(a: Vec3, b: Vec3, c: Vec3): Vec3 {
-	const ab: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-	const ac: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-	return [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]];
-}
+// ── OBJ ──────────────────────────────────────────────────────────────────────
+// OBJ export no longer lives in the pure logic layer: each shape group's cubes + meshes are first
+// merged into a single Blockbench Mesh (see src/build/export.ts mergeGroupToMesh), then serialized
+// with Blockbench's own OBJ codec (Codecs.obj.compile), so the .obj carries exactly one `o` object.
+// The pure layer only produces the forge:obj reference JSON below.
 
 /**
- * Bakes a group's elements into a single merged OBJ + MTL:
- *  - vertex coords in px/16 (block units); vt pixel/size with v flipped; vn from triangle outward normals
- *  - a single `o` object for the whole file (no per-element o / no g groups) at the root — the Forge
- *    loader can read it as one mesh
- *  - textures distinguished via usemtl m_<key>; MTL with one newmtl + map_Kd {ns}:block/track/{id}/{res}
- *    per texture
+ * Mod-loader OBJ reference JSON (.obj model + flip_v + textures), matching the Create/Kuayue examples.
+ * The `loader` prefix selects the mod loader (forge → "forge:obj", neoforge → "neoforge:obj", …),
+ * defaulting to forge. 1.20~1.21 straddles the forge → neoforge transition, so it's user-selectable.
  */
-export function buildObj(opts: {
-	elements: ExportElement[];
-	textures: ExportTexture[];
-	sizeOf: Record<string, [number, number]>;
-	namespace: string;
-	trackId: string;
-	/** MTL file name (for the mtllib line), default materials.mtl */
-	mtlName?: string;
-	/** texture key → resource directory (default block/track/{trackId}) */
-	texturePathOf?: Record<string, string>;
-}): { obj: string; mtl: string } {
-	const resOf: Record<string, string> = Object.fromEntries(opts.textures.map((t) => [t.key, t.resName]));
-	const objLines: string[] = [`# Made in Blockbench`, `mtllib ${opts.mtlName ?? 'materials.mtl'}`];
-	const mtlLines: string[] = ['# Made in Blockbench'];
-	const mtlKeys = new Set<string>();
-	let vIdx = 0;
-	let vtIdx = 0;
-	let vnIdx = 0;
-	let currentMtl: string | null = null;
-
-	const pushV = (p: Vec3) => {
-		objLines.push(`v ${p[0] / 16} ${p[1] / 16} ${p[2] / 16}`);
-		return ++vIdx;
-	};
-	const pushVn = (a: Vec3, b: Vec3, c: Vec3) => {
-		const n = triNormal(a, b, c);
-		const len = Math.hypot(n[0], n[1], n[2]) || 1;
-		objLines.push(`vn ${n[0] / len} ${n[1] / len} ${n[2] / len}`);
-		return ++vnIdx;
-	};
-	const useMtl = (key: string) => {
-		if (key !== currentMtl) {
-			objLines.push(`usemtl m_${key}`);
-			currentMtl = key;
-		}
-		mtlKeys.add(key);
-	};
-	const fmt = (n: number) => String(n);
-
-	for (const el of opts.elements) {
-		if (el.type === 'cube') {
-			const baseV = vIdx;
-			const corners: Vec3[] = [];
-			for (let c = 0; c < 8; c++) {
-				const p = objCorner(el, c);
-				corners.push(p);
-				pushV(p);
-			}
-			for (const [dir, face] of Object.entries(el.faces)) {
-				if (!face || !face.textureKey) continue;
-				const O = OBJ_FACE_CORNERS[dir as CubeFaceDirection];
-				const size = opts.sizeOf[face.textureKey] ?? [16, 16];
-				const baseVt = vtIdx;
-				for (const t of objFaceVt(face, size)) {
-					objLines.push(t);
-					vtIdx++;
-				}
-				// The two triangles share the same normal (coplanar)
-				const vn = pushVn(corners[O[2] - 1], corners[O[1] - 1], corners[O[0] - 1]);
-				useMtl(face.textureKey);
-				objLines.push(`f ${fmt(baseV + O[2] - 1)}/${fmt(baseVt + 3)}/${fmt(vn)} ${fmt(baseV + O[1] - 1)}/${fmt(baseVt + 2)}/${fmt(vn)} ${fmt(baseV + O[0] - 1)}/${fmt(baseVt + 1)}/${fmt(vn)}`);
-				objLines.push(`f ${fmt(baseV + O[3] - 1)}/${fmt(baseVt + 4)}/${fmt(vn)} ${fmt(baseV + O[2] - 1)}/${fmt(baseVt + 3)}/${fmt(vn)} ${fmt(baseV + O[0] - 1)}/${fmt(baseVt + 1)}/${fmt(vn)}`);
-			}
-		} else {
-			// mesh: vertices + faces merged into the same root object
-			const vertGlobal: Record<string, number> = {};
-			for (const [id, pos] of Object.entries(el.vertices)) vertGlobal[id] = pushV(pos);
-			for (const face of Object.values(el.faces)) {
-				if (!face || !face.textureKey || face.vertices.length < 3) continue;
-				const size = opts.sizeOf[face.textureKey] ?? [16, 16];
-				const vtLocal: number[] = [];
-				face.vertices.forEach((vId, i) => {
-					let u = 0;
-					let v = 0;
-					const raw = face.uv as unknown;
-					if (Array.isArray(raw)) {
-						const first = raw[0];
-						if (Array.isArray(first)) {
-							const p = first[i];
-							u = p?.[0] ?? 0;
-							v = p?.[1] ?? 0;
-						} else {
-							u = (raw as number[])[i * 2] ?? 0;
-							v = (raw as number[])[i * 2 + 1] ?? 0;
-						}
-					} else if (raw) {
-						const p = (raw as Record<string, number[]>)[vId];
-						u = p?.[0] ?? 0;
-						v = p?.[1] ?? 0;
-					}
-					objLines.push(`vt ${u / (size[0] || 16)} ${1 - v / (size[1] || 16)}`);
-					vtLocal.push(++vtIdx);
-				});
-				const pts = face.vertices.map((vId) => el.vertices[vId]);
-				const vn = pushVn(pts[0], pts[1], pts[2]);
-				useMtl(face.textureKey);
-				for (let k = 1; k + 1 < face.vertices.length; k++) {
-					objLines.push(`f ${fmt(vertGlobal[face.vertices[0]])}/${fmt(vtLocal[0])}/${fmt(vn)} ${fmt(vertGlobal[face.vertices[k]])}/${fmt(vtLocal[k])}/${fmt(vn)} ${fmt(vertGlobal[face.vertices[k + 1]])}/${fmt(vtLocal[k + 1])}/${fmt(vn)}`);
-				}
-			}
-		}
-	}
-
-	for (const key of mtlKeys) {
-		mtlLines.push(`newmtl m_${key}`, `map_Kd ${textureResourcePath(opts.namespace, opts.trackId, resOf[key] ?? key, opts.texturePathOf?.[key])}`);
-	}
-	mtlLines.push('newmtl none');
-	return { obj: objLines.join('\n'), mtl: mtlLines.join('\n') };
-}
-
-/** forge:obj reference JSON (.obj model + flip_v + textures), matching the Create/Kuayue examples */
 export function buildObjReferenceJson(opts: {
 	namespace: string;
 	trackId: string;
@@ -532,13 +368,15 @@ export function buildObjReferenceJson(opts: {
 	texturePathOf?: Record<string, string>;
 	/** Model resource path (the path part of {namespace}:path/file used by blockstate references; default block/track/{trackId}) */
 	modelPath?: string;
+	/** Mod loader prefix for the loader field (default forge) */
+	loader?: string;
 }): Record<string, unknown> {
 	const texMap: Record<string, string> = {};
 	opts.textures.forEach((t, i) => {
 		texMap[String(i)] = textureResourcePath(opts.namespace, opts.trackId, t.resName, opts.texturePathOf?.[t.key]);
 	});
 	const json: Record<string, any> = {
-		loader: 'forge:obj',
+		loader: `${opts.loader ?? 'forge'}:obj`,
 		ambientocclusion: false,
 		flip_v: true,
 		render_type: 'cutout_mipped',

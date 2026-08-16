@@ -30,6 +30,7 @@ global.Group = class Group {
 		this.parent = null;
 		this.uuid = 'g-' + groupCounter++;
 		this.deleted = false;
+		this.export = true; // OutlinerElement 默认导出
 		createdGroups.push(this);
 	}
 	init() {
@@ -44,6 +45,25 @@ global.Group = class Group {
 		this.deleted = true;
 	}
 };
+// Group.all：当前项目的所有分组（导出隔离用）
+Object.defineProperty(global.Group, 'all', {
+	get() {
+		return walkProject().groups;
+	},
+});
+
+// 标准右手旋转（匹配 Blockbench 渲染 Cube.rotation 的约定；Y 与插件的 rotateVec 相反）
+function stdRotate(v, rot) {
+	let [x, y, z] = v;
+	const rad = (d) => (d * Math.PI) / 180;
+	let [c, s] = [Math.cos(rad(rot[0])), Math.sin(rad(rot[0]))];
+	[y, z] = [y * c - z * s, y * s + z * c];
+	[c, s] = [Math.cos(rad(rot[1])), Math.sin(rad(rot[1]))];
+	[x, z] = [x * c + z * s, -x * s + z * c];
+	[c, s] = [Math.cos(rad(rot[2])), Math.sin(rad(rot[2]))];
+	[x, y] = [x * c - y * s, x * s + y * c];
+	return [x, y, z];
+}
 
 global.Cube = class Cube {
 	constructor(opts) {
@@ -56,6 +76,7 @@ global.Cube = class Cube {
 		this.faces = opts.faces;
 		this.children = [];
 		this.deleted = false;
+		this.export = true; // OutlinerElement 默认导出
 	}
 	init() {
 		createdCubes.push(this);
@@ -67,6 +88,21 @@ global.Cube = class Cube {
 	}
 	delete() {
 		this.deleted = true;
+	}
+	// Blockbench 的 getGlobalVertexPositions：8 个角（rotation+origin 烘焙为世界坐标）
+	getGlobalVertexPositions() {
+		const picks = [
+			[1, 1, 1], [1, 1, 0], [1, 0, 1], [1, 0, 0],
+			[0, 1, 0], [0, 1, 1], [0, 0, 0], [0, 0, 1],
+		];
+		const origin = this.origin || [0, 0, 0];
+		const rot = this.rotation || [0, 0, 0];
+		return picks.map((p) => {
+			const v = [p[0] ? this.to[0] : this.from[0], p[1] ? this.to[1] : this.from[1], p[2] ? this.to[2] : this.from[2]];
+			const rel = [v[0] - origin[0], v[1] - origin[1], v[2] - origin[2]];
+			const r = stdRotate(rel, rot);
+			return [r[0] + origin[0], r[1] + origin[1], r[2] + origin[2]];
+		});
 	}
 };
 
@@ -116,7 +152,50 @@ global.MeshFace = class MeshFace {
 	getSaveCopy() {
 		return { vertices: this.vertices.slice(), uv: this.uv, rotation: this.rotation, texture: this.texture };
 	}
+	// Blockbench 的 Face.getTexture：uuid 字符串 → Project.textures 解析
+	getTexture() {
+		if (this.texture && typeof this.texture === 'object' && this.texture.uuid) return this.texture;
+		if (typeof this.texture === 'string') {
+			return (Project.textures || []).find((tex) => tex.uuid === this.texture) || null;
+		}
+		return this.texture;
+	}
+	// Blockbench 的 getSortedVertices：把四边形排成凸绕序（矩形保持原序）
+	getSortedVertices() {
+		if (this.vertices.length < 4) return this.vertices.slice();
+		const { mesh, vertices } = this;
+		const pos = (k) => mesh.vertices[k] || [0, 0, 0];
+		function test(b1, b2, top, check) {
+			const p1 = pos(b1), p2 = pos(b2), pt = pos(top), pc = pos(check);
+			const ab = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+			const at = [pt[0] - p1[0], pt[1] - p1[1], pt[2] - p1[2]];
+			const n = [ab[1] * at[2] - ab[2] * at[1], ab[2] * at[0] - ab[0] * at[2], ab[0] * at[1] - ab[1] * at[0]];
+			return n[0] * (pc[0] - p1[0]) + n[1] * (pc[1] - p1[1]) + n[2] * (pc[2] - p1[2]) > 0;
+		}
+		if (test(vertices[1], vertices[2], vertices[0], vertices[3])) return [vertices[2], vertices[0], vertices[1], vertices[3]];
+		if (test(vertices[0], vertices[1], vertices[2], vertices[3])) return [vertices[0], vertices[2], vertices[1], vertices[3]];
+		return vertices.slice();
+	}
+	// Blockbench 的 getNormal：前三个（排序后）顶点叉积
+	getNormal(normalize = true, alt_tri) {
+		const vertices = this.getSortedVertices();
+		if (vertices.length < 3) return [0, 0, 0];
+		const idx = vertices.length === 4 && alt_tri ? [0, 2, 3] : [0, 1, 2];
+		const base = this.mesh.vertices[vertices[idx[0]]] || [0, 0, 0];
+		const a = (this.mesh.vertices[vertices[idx[1]]] || [0, 0, 0]).map((x, i) => x - base[i]);
+		const b = (this.mesh.vertices[vertices[idx[2]]] || [0, 0, 0]).map((x, i) => x - base[i]);
+		let n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+		if (normalize) {
+			const len = Math.hypot(...n) || 1;
+			n = n.map((x) => x / len);
+		}
+		return n;
+	}
 };
+// OutlinerNode.uuids：与真实 Blockbench 一致，uuid → 元素。OBJ codec 遍历 THREE 场景节点时
+// 经 OutlinerNode.uuids[node.name]（node.name = uuid）解析回元素。
+global.OutlinerNode = { uuids: {} };
+
 // Mesh 桩：忠实复刻 Blockbench 的 Mesh 元素。官方建 mesh 的姿势是 new Mesh({name, vertices:{}})
 // + addVertices() + addFaces(new MeshFace(...))（与 OBJ 导入器一致）；直接往构造函数传
 // vertices/faces 是非官方用法。vertices/faces 走 _static.properties（与真实一致）。
@@ -133,6 +212,17 @@ global.Mesh = class Mesh {
 		this.parent = 'root';
 		this.deleted = false;
 		this._static = { properties: { vertices: {}, faces: {}, seams: {} } };
+		this.export = true; // OutlinerElement 默认导出
+		// 真实 Blockbench：preview_controller.updateAll 创建元素的 THREE 场景节点
+		// （Project.nodes_3d[uuid]，name = uuid），OBJ codec 遍历场景并经 OutlinerNode.uuids 解析
+		this.preview_controller = {
+			updateAll: (el) => {
+				const node = { name: el.uuid, type: 'mesh', export: el.export, geometry: {}, faces: el.faces, matrixWorld: null };
+				Project.nodes_3d[el.uuid] = node;
+				if (Project.model_3d && !Project.model_3d.children.includes(node)) Project.model_3d.children.push(node);
+				return el;
+			},
+		};
 		// 忠实复刻：无 vertices 时 Mesh 构造器会塞一个默认 2×2×2 方块（东/西/上/下/南/北 6 面）
 		if (!opts || !opts.vertices) {
 			this.addVertices([2, 4, 2], [2, 4, -2], [2, 0, 2], [2, 0, -2], [-2, 4, 2], [-2, 4, -2], [-2, 0, 2], [-2, 0, -2]);
@@ -207,19 +297,40 @@ global.Mesh = class Mesh {
 		});
 	}
 	addFaces(...faces) {
-		return faces.map((face, i) => {
-			const key = 'f' + i;
+		// 与真实 Blockbench 一致：每次调用分配唯一 key（'f' + 已有面数），否则多次调用互相覆盖
+		return faces.map((face) => {
+			const key = 'f' + Object.keys(this.faces).length;
 			this.faces[key] = face;
 			return key;
 		});
 	}
 	init() {
+		// 与真实 Blockbench 一致：init 注册 OutlinerNode.uuids[uuid]；顶层元素进入 Project.elements。
+		// 注意 init 不会创建 THREE 场景节点 —— 那要等 preview_controller.updateAll（OBJ codec 靠它找网格）
+		global.OutlinerNode.uuids[this.uuid] = this;
+		if (this.parent == null || this.parent === 'root' || this.parent === '') {
+			if (Array.isArray(Project.elements) && !Project.elements.includes(this)) Project.elements.push(this);
+		}
 		return this;
 	}
 	addTo(parent) {
+		if (parent instanceof global.Group && Array.isArray(Project.elements)) {
+			const i = Project.elements.indexOf(this);
+			if (i !== -1) Project.elements.splice(i, 1);
+		}
 		this.parent = parent;
 		parent.children.push(this);
 		return this;
+	}
+	remove() {
+		// 与真实 Blockbench 一致：移除场景节点 + 注销 OutlinerNode.uuids + 出树
+		if (Array.isArray(Project.elements)) {
+			const i = Project.elements.indexOf(this);
+			if (i !== -1) Project.elements.splice(i, 1);
+		}
+		if (Project.nodes_3d && Project.nodes_3d[this.uuid]) delete Project.nodes_3d[this.uuid];
+		if (global.OutlinerNode && global.OutlinerNode.uuids[this.uuid] === this) delete global.OutlinerNode.uuids[this.uuid];
+		this.deleted = true;
 	}
 	delete() {
 		this.deleted = true;
@@ -387,7 +498,11 @@ global.Filesystem = {
 		const src = meshImport ? meshPartJson : nextPartKind === 'tie' ? tiePartJson : railPartJson;
 		const json = JSON.parse(JSON.stringify(src));
 		json.textures[0].id = String(importCalls);
-		json.textures[0].source = (meshImport ? 'data:image/png;base64,mesh' : 'data:image/png;base64,sample') + importCalls;
+		// 假 base64 需能被 Node 的 atob 解码，否则 OBJ 导出写纹理 PNG 时 dataUrlToBytes 抛错。
+		// 'sample'（6 字符）+ 单数字 = 7 字符可解码；'mesh'（4 字符）+ 单数字 = 5 字符会解码失败，
+		// 所以 mesh 源补一个 0（mesh01…，6 字符即可解码）。sample 分支保持不变（断言依赖 sample1）。
+		json.textures[0].source =
+			(meshImport ? 'data:image/png;base64,mesh0' : 'data:image/png;base64,sample') + importCalls;
 		cb([
 			{ name: 'part.bbmodel', path: 'part.bbmodel', content: JSON.stringify(json) },
 		]);
@@ -401,6 +516,137 @@ global.Project = {
 	texture_width: 16,
 	texture_height: 16,
 	format: { id: 'java_block' },
+	// 与真实 Blockbench 一致：nodes_3d[uuid] 存每个元素的 THREE 场景节点；model_3d 是 outliner 根节点
+	// （挂到 scene 下）。OBJ codec 遍历 scene 的节点并经 OutlinerNode.uuids[node.name] 解析元素。
+	nodes_3d: {},
+	model_3d: {
+		children: [],
+		add(node) {
+			if (!this.children.includes(node)) this.children.push(node);
+		},
+	},
+};
+// 与真实 Blockbench 一致：Project.getUVWidth/Height 决定 OBJ 的 vt 归一化基准
+Project.getUVWidth = (tex) => (tex && tex.uv_width) || Project.texture_width || 16;
+Project.getUVHeight = (tex) => (tex && tex.uv_height) || Project.texture_height || 16;
+
+/** 遍历当前项目的元素树（Project.elements 顶层）收集 cube / mesh / group */
+function walkProject() {
+	const cubes = [],
+		meshes = [],
+		groups = [];
+	function walk(node) {
+		if (!node || node.deleted) return;
+		if (node instanceof global.Cube) cubes.push(node);
+		else if (node instanceof global.Mesh) meshes.push(node);
+		else if (node instanceof global.Group) {
+			groups.push(node);
+			(node.children || []).forEach(walk);
+		}
+	}
+	(Project.elements || []).forEach(walk);
+	return { cubes, meshes, groups };
+}
+
+// Outliner.elements：当前项目的 cube+mesh（导出隔离用；与 Codec.patchCollectionExport 一致）
+global.Outliner = {
+	root: [],
+	get elements() {
+		const { cubes, meshes } = walkProject();
+		return [...cubes, ...meshes];
+	},
+};
+
+// OBJ 导出器设置（Codecs.obj.compile 读取）
+global.Settings = {
+	get(key) {
+		return { obj_face_export_mode: 'both', model_export_scale: 16 }[key];
+	},
+};
+
+/** 最近一次 Codecs.obj.compile 的统计（冒烟断言用） */
+let __objLastCompile = null;
+
+/**
+ * Blockbench OBJ codec 桩：与真实 Codecs.obj.compile 同格式 —— 遍历 THREE 场景节点（Project.nodes_3d），
+ * 经 OutlinerNode.uuids[node.name]（node.name = uuid）解析回元素，只序列化 export !== false 且有面的
+ * cube/mesh（导出的合并网格是唯一 export=true 且有场景节点的元素 → 恰好一个 `o` 对象）。顶点 px/16、
+ * vt 用 Project.getUVWidth/Height 归一化、flat 法线、usemtl m_<uuid>。返回 all_files 形式的
+ * {obj,mtl,images}。
+ */
+global.Codecs = {
+	obj: {
+		compile(options = {}) {
+			const out = [`# Made in Blockbench 5.1.6`, `mtllib ${options.mtl_name || 'materials.mtl'}`];
+			const materials = {};
+			let indexVertex = 0,
+				indexVertexUvs = 0,
+				indexNormals = 0,
+				oCount = 0;
+			const nodes = Object.values(Project.nodes_3d || {});
+			for (const node of nodes) {
+				const el = global.OutlinerNode.uuids[node.name];
+				// 真实 codec 还会过滤 `g instanceof THREE.Mesh`（只处理 cube/mesh，跳过 group 节点），
+				// 用「有 faces」等价表达
+				if (!el || el.export === false || !el.faces) continue;
+				oCount++;
+				out.push(`o ${el.name || 'mesh'}`);
+				const vBase = indexVertex;
+				let vertexKeys = [];
+				if (el instanceof global.Mesh) {
+					vertexKeys = Object.keys(el.vertices);
+					vertexKeys.forEach((vk) => {
+						const v = el.vertices[vk];
+						out.push(`v ${v[0] / 16} ${v[1] / 16} ${v[2] / 16}`);
+						indexVertex++;
+					});
+				} else if (el instanceof global.Cube) {
+					el.getGlobalVertexPositions().forEach((p) => {
+						out.push(`v ${p[0] / 16} ${p[1] / 16} ${p[2] / 16}`);
+						indexVertex++;
+					});
+				}
+				let mtl;
+				for (const face of Object.values(el.faces || {})) {
+					if (!face || face.texture === null || !face.vertices || face.vertices.length < 3) continue;
+					const tex = face.getTexture();
+					const W = Project.getUVWidth(tex) || 16,
+						H = Project.getUVHeight(tex) || 16;
+					const sorted = face.getSortedVertices().slice();
+					const vtLocal = [];
+					sorted.forEach((vk) => {
+						const uv = face.uv[vk] || [0, 0];
+						out.push(`vt ${uv[0] / W} ${1 - uv[1] / H}`);
+						vtLocal.push(++indexVertexUvs);
+					});
+					const n = face.getNormal(true);
+					out.push(`vn ${n[0]} ${n[1]} ${n[2]}`);
+					const vn = ++indexNormals;
+					if (tex && tex.uuid) materials[tex.uuid] = tex;
+					const mtlNew = !tex || typeof tex === 'string' ? 'none' : 'm_' + tex.uuid;
+					if (mtlNew !== mtl) {
+						mtl = mtlNew;
+						out.push(`usemtl ${mtlNew}`);
+					}
+					const triplets = sorted.map((vk, i) => {
+						const vi = el instanceof global.Mesh ? vertexKeys.indexOf(vk) : 0;
+						return `${vBase + vi + 1}/${vtLocal[i]}/${vn}`;
+					});
+					out.push('f ' + triplets.join(' '));
+				}
+			}
+			let mtlOutput = '# Made in Blockbench 5.1.6';
+			for (const key in materials) {
+				const tex = materials[key];
+				let name = tex.name || 'texture';
+				if (!name.endsWith('.png')) name += '.png';
+				mtlOutput += `\nnewmtl m_${key}\nmap_Kd ${name}`;
+			}
+			mtlOutput += '\nnewmtl none';
+			__objLastCompile = { oCount, vertexCount: indexVertex };
+			return options.all_files ? { obj: out.join('\n'), mtl: mtlOutput, images: materials } : out.join('\n');
+		},
+	},
 };
 
 // 生成流程用到的全局：新建工作区 + 纹理
@@ -830,6 +1076,7 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 		assert.strictEqual(init.namespace, 'create', '❌ 导出命名空间默认应为 create');
 		assert.strictEqual(init.trackId, 'track', '❌ 导出轨道 id 默认应为工作区名');
 		assert.strictEqual(init.mode, 'classic_java', '❌ 导出模式默认应为经典 Java');
+		assert.strictEqual(init.loader, 'forge', '❌ 导出模组加载器默认应为 forge');
 		assert.strictEqual(init.modelPath, 'block/track/track', '❌ 模型资源路径默认应为 block/track/{轨道id}');
 		const initTexPaths = Object.values(init.texturePaths);
 		assert(initTexPaths.length > 0, '❌ 导出对话框应列出每张纹理的资源路径');
@@ -839,8 +1086,8 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	// 跑一次确认（先取消这个默认对话框，避免影响后续）
 	exportDlg0.config.onCancel();
 
-	/** 触发一次导出，返回写出的文件列表 */
-	const runExport = async (mode) => {
+	/** 触发一次导出，返回写出的文件列表（loader 可选，缺省 forge） */
+	const runExport = async (mode, loader) => {
 		exportedFiles.length = 0;
 		const click = exportAction.click();
 		const dlg = lastDialog;
@@ -849,6 +1096,7 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 		drv.setMode(mode);
 		drv.setNamespace('kuayue');
 		drv.setTrackId('track');
+		if (loader) drv.setLoader(loader);
 		drv.setRoot(exportDir); // 自动生成模型/纹理的默认导出路径
 		const ret = drv.confirm();
 		assert.notStrictEqual(ret, false, `❌ ${mode} 导出配置合法时不应阻止关闭`);
@@ -916,27 +1164,89 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	console.log('   导出（新 Java 1.21.11+）→ format_version 1.21.11 ✓');
 
 	// ── 模式 3：全部 OBJ ──
-	exported = await runExport('obj');
+	// 1.20~1.21 处于 forge/neoforge 交替期：这里把模组加载器改为 neoforge，
+	// 验证 OBJ 引用 JSON 的 loader 前缀跟随（"loader": "neoforge:obj"）
+	exported = await runExport('obj', 'neoforge');
 	const objPaths = exported.map((f) => f.path).filter((p) => p.includes('/models/block/track/track/') && p.endsWith('.obj'));
 	assert.strictEqual(objPaths.length, 12, `❌ OBJ 模式应导出 12 个 .obj，实际 ${objPaths.length}`);
 	const xObj = exported.find((f) => f.path.endsWith('/models/block/track/track/x_ortho.obj'));
 	assert(xObj, '❌ 应导出 x_ortho.obj');
 	assert(xObj.content.startsWith('# Made in Blockbench'), '❌ OBJ 应有文件头');
 	assert(/^mtllib x_ortho\.mtl/m.test(xObj.content), '❌ OBJ 应引用 mtllib');
-	// 单一合并网格：没有 o / g 分组标记，顶点坐标 px/16
-	assert(!/^[og]\s/m.test(xObj.content), '❌ OBJ 应为单一合并网格（不应有 o / g 分组）');
-	assert(xObj.content.includes('v -0.125 0.125 0'), '❌ OBJ 顶点应为 px/16（-2,2,0 → v -0.125 0.125 0）');
+	// 单一合并网格：先合并成单个 Blockbench Mesh、再用其 OBJ codec 导出 → 恰好一个 o 对象（而非手写/删 o 键）
+	const objObjects = xObj.content.split('\n').filter((l) => /^o /.test(l));
+	assert.strictEqual(objObjects.length, 1, `❌ OBJ 应为单一合并网格（恰好一个 o 对象），实际 ${objObjects.length} 个`);
+	assert(!/^g /m.test(xObj.content), '❌ OBJ 不应有 g 分组');
+	// o 名称应为清洗后的形状 id（去掉（…）显示后缀/空格），与 .obj 文件名一致
+	assert.strictEqual(objObjects[0], 'o x_ortho', `❌ o 名称应为清洗后的形状 id（无括号/空格），实际 ${JSON.stringify(objObjects[0])}`);
+	// 顶点坐标 px/16（块单位），数量 = 合并网格的顶点数（每个 cube 8 个角，无去重）
+	const vLines = xObj.content.split('\n').filter((l) => /^v /.test(l));
+	assert(vLines.length > 0, '❌ OBJ 应有顶点');
+	const NUM = '[+-]?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:[eE][+-]?\\d+)?';
+	assert(
+		vLines.every((l) => new RegExp(`^v ${NUM} ${NUM} ${NUM}$`).test(l.trim())),
+		'❌ OBJ 顶点格式应为 v x y z（px/16）'
+	);
 	assert(/^usemtl m_t/m.test(xObj.content), '❌ OBJ 应含 usemtl 材质');
 	assert(/^f /m.test(xObj.content), '❌ OBJ 应含 f 面');
+	// 合并网格 = 该分组全部 cube 的并集：顶点数 = 8 × x_ortho 组的 cube 数；OBJ codec 恰好序列化一个 o
+	const xoGroup = trackParent.children.find((g) => g.name.startsWith('x_ortho'));
+	const xoCubeCount = xoGroup ? xoGroup.children.filter((ch) => ch instanceof global.Cube).length : 0;
+	assert.strictEqual(vLines.length, xoCubeCount * 8, `❌ 合并网格顶点数应为 x_ortho 组 cube 数(${xoCubeCount})×8，实际 ${vLines.length}`);
+	assert(__objLastCompile && __objLastCompile.oCount === 1, '❌ OBJ codec 应恰好序列化一个合并网格');
 	const xMtl = exported.find((f) => f.path.endsWith('/models/block/track/track/x_ortho.mtl'));
 	assert(xMtl && /^newmtl m_t/m.test(xMtl.content) && /^map_Kd kuayue:block\/track\/track\//m.test(xMtl.content), '❌ MTL 应有 newmtl + map_Kd');
 	const xRef = JSON.parse(exported.find((f) => f.path.endsWith('/models/block/track/track/x_ortho.json')).content);
-	assert.strictEqual(xRef.loader, 'forge:obj', '❌ OBJ 引用 JSON 应有 loader forge:obj');
+	assert.strictEqual(xRef.loader, 'neoforge:obj', '❌ OBJ 引用 JSON 的 loader 前缀应跟随模组加载器（neoforge:obj）');
 	assert.strictEqual(xRef.model, 'kuayue:models/block/track/track/x_ortho.obj', '❌ OBJ 引用应指向 .obj');
 	assert.strictEqual(xRef.flip_v, true, '❌ OBJ 引用应有 flip_v: true');
 	// OBJ 模式仍写 blockstates
 	assert(exported.some((f) => f.path.endsWith('/blockstates/track_track.json')), '❌ OBJ 模式也应导出 blockstates');
 	console.log('   导出（全部 OBJ）→ 12 个单一合并网格 .obj/.mtl + 引用 JSON + blockstates ✓');
+
+	// ── 模式 3b：mesh 零件形状的 OBJ 导出（合并网格含 mesh 顶点，world 烘焙）──
+	// 场景 C 的自由模型轨道大组（cParent）每个形状分组含 1 个源 mesh（8 顶点）。导出 segment_left
+	// 验证：合并网格恰好一个 `o`，且顶点数 = 源 mesh 的 8（appendMeshToMerged 把 mesh 顶点并入合并网格）
+	// 先快照场景 D 的项目状态，测试后恢复（后续基岩版测试依赖它）
+	const meshTestState = {
+		name: Project.name,
+		elements: Project.elements,
+		texW: Project.texture_width,
+		texH: Project.texture_height,
+		format: Project.format,
+		parentName: trackParent.name,
+	};
+	cParent.name = 'track';
+	Project.elements = [cParent];
+	Project.name = 'track';
+	Project.format = { id: 'free' };
+	Project.texture_width = 32;
+	Project.texture_height = 32;
+	exportedFiles.length = 0;
+	exportAction.click();
+	const dlgM = lastDialog;
+	assert(dlgM, '❌ mesh 轨道应打开导出配置对话框');
+	assert.strictEqual(dlgM.config._driver.getState().mode, 'obj', '❌ mesh 轨道（自由模型）导出应强制 OBJ');
+	dlgM.config._driver.setRoot(exportDir);
+	dlgM.config._driver.setNamespace('kuayue');
+	dlgM.config._driver.setTrackId('track');
+	assert.notStrictEqual(dlgM.config._driver.confirm(), false, '❌ mesh 轨道导出不应被阻止');
+	await new Promise((r) => setTimeout(r, 20));
+	const segObj = exportedFiles.find((f) => f.path.endsWith('/models/block/track/track/segment_left.obj'));
+	assert(segObj, '❌ mesh 轨道应导出 segment_left.obj');
+	const segLines = segObj.content.split('\n');
+	const segVs = segLines.filter((l) => /^v /.test(l));
+	const segOs = segLines.filter((l) => /^o /.test(l));
+	assert.strictEqual(segOs.length, 1, `❌ segment_left 应为单一合并网格（恰好一个 o），实际 ${segOs.length} 个`);
+	assert.strictEqual(segVs.length, 8, `❌ segment_left 合并网格应含源 mesh 的 8 个顶点，实际 ${segVs.length}`);
+	console.log('   导出（mesh 零件形状）→ 合并网格含 mesh 顶点、恰好一个 o ✓');
+	// 恢复场景 D 的状态（轨道大组 + java_block + 64×64）
+	trackParent.name = meshTestState.parentName;
+	Project.elements = meshTestState.elements;
+	Project.name = meshTestState.name;
+	Project.texture_width = meshTestState.texW;
+	Project.texture_height = meshTestState.texH;
+	Project.format = meshTestState.format;
 
 	// ── 模式 4：基岩版 ──
 	exported = await runExport('bedrock');

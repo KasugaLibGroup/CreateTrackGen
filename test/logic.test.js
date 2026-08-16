@@ -1332,67 +1332,10 @@ t('buildJavaModelJson：经典无 format_version，新格式有 1.21.11', () => 
 	assert.deepStrictEqual(fresh.elements[0].rotation, { x: -45, y: 90, z: 0, origin: [8, 2, 8] }, '新格式多轴 {x,y,z}');
 });
 
-t('buildObj：单一合并网格、无 o/g、顶点 px/16、vt 翻转、usemtl/mtl', () => {
-	const cube = {
-		type: 'cube',
-		name: 'rail',
-		from: [-2, 2, 0],
-		to: [2, 6, 16],
-		faces: {
-			north: { uv: [0, 0, 8, 8], textureKey: 't0' },
-			up: { uv: [0, 0, 16, 16], textureKey: 't0' },
-		},
-	};
-	const res = L.buildObj({ elements: [cube], textures: [{ key: 't0', resName: 'rail', width: 64, height: 64 }], sizeOf: { t0: [64, 64] }, namespace: 'kuayue', trackId: 'track', mtlName: 'z_ortho.mtl' });
-	const lines = res.obj.split('\n');
-	assert(lines[0] === '# Made in Blockbench' && lines[1] === 'mtllib z_ortho.mtl');
-	assert(!lines.some((l) => /^[og]\s/.test(l)), 'OBJ 不应有 o / g 分组');
-	// 顶点 px/16：corner 0 (tx,ty,tz)=(2,6,16) → v 0.125 0.375 1；corner 6 (fx,fy,fz)=(-2,2,0) → v -0.125 0.125 0
-	assert(lines.includes('v 0.125 0.375 1'), 'OBJ 顶点应为 px/16');
-	assert(lines.includes('v -0.125 0.125 0'));
-	// vt：64×64 纹理、像素 uv [0,0,8,8] → vt 0/64,1-0/64=1 … 0.125,0.875；v 翻底
-	assert(lines.includes('vt 0 1') && lines.includes('vt 0.125 0.875'));
-	// 面 / usemtl / vn
-	assert(lines.some((l) => /^f /.test(l)), 'OBJ 应有面');
-	assert(lines.some((l) => l === 'usemtl m_t0'), 'OBJ 应引用材质');
-	assert(lines.some((l) => /^vn /.test(l)), 'OBJ 应有法线');
-	// MTL
-	assert(res.mtl.includes('newmtl m_t0') && res.mtl.includes('map_Kd kuayue:block/track/track/rail'), 'MTL 应有 newmtl + map_Kd');
-	assert(/newmtl none$/.test(res.mtl.trim()), 'MTL 应以 newmtl none 结尾');
-});
-
-t('buildObj：旋转立方体烘焙为三角面（外法向）', () => {
-	const cube = {
-		type: 'cube',
-		name: 'rail',
-		from: [-2, 0, 0],
-		to: [2, 4, 16],
-		rotation: [0, 45, 0],
-		origin: [0, 0, 8],
-		faces: { up: { uv: [0, 0, 16, 16], textureKey: 't0' } },
-	};
-	const res = L.buildObj({ elements: [cube], textures: [{ key: 't0', resName: 'rail', width: 64, height: 64 }], sizeOf: { t0: [64, 64] }, namespace: 'kuayue', trackId: 'track', mtlName: 'x.mtl' });
-	// 旋转后仍有 8 个顶点 + 面
-	assert((res.obj.match(/^v /gm) || []).length === 8, '旋转立方体应有 8 个顶点');
-	assert((res.obj.match(/^f /gm) || []).length === 2, '顶面应有 2 个三角');
-	// 法线应朝 +y 附近（up 面，旋转绕 Y 不影响法线）
-	const vn = res.obj.split('\n').find((l) => /^vn /.test(l));
-	const n = vn.split(' ').slice(1).map(Number);
-	assert(Math.abs(n[1]) > 0.9 && Math.abs(n[0]) < 0.2, `up 面法线应近 +y，实际 ${vn}`);
-});
-
-t('buildObj：mesh 并入同一合并网格', () => {
-	const mesh = {
-		type: 'mesh',
-		name: 'railmesh',
-		vertices: { '0': [0, 0, 0], '1': [16, 0, 0], '2': [16, 4, 0], '3': [0, 4, 0] },
-		faces: { '0': { vertices: ['0', '1', '2', '3'], uv: { '0': [0, 0], '1': [8, 0], '2': [8, 4], '3': [0, 4] }, textureKey: 't0' } },
-	};
-	const res = L.buildObj({ elements: [mesh], textures: [{ key: 't0', resName: 'mesh', width: 16, height: 16 }], sizeOf: { t0: [16, 16] }, namespace: 'kuayue', trackId: 'track', mtlName: 'm.mtl' });
-	assert((res.obj.match(/^v /gm) || []).length === 4, 'mesh 应有 4 个顶点');
-	assert((res.obj.match(/^f /gm) || []).length === 2, '四边形 mesh 应三角化为 2 个三角');
-	assert(!/^[og]\s/m.test(res.obj), 'mesh 也不应产生 o / g 分组');
-});
+// buildObj 已从纯逻辑层移除：OBJ 导出现在把每个形状分组的 cube+mesh 合并成单个 Blockbench Mesh
+// （官方 Mesh API），再用 Blockbench 自身的 OBJ codec（Codecs.obj.compile）序列化 —— 见
+// src/build/export.ts 的 mergeGroupToMesh / exportGroupAsObj（Blockbench 层，冒烟测试覆盖）。
+// 纯逻辑层只保留 forge:obj 引用 JSON 的生成（见下方 buildObjReferenceJson 用例）。
 
 t('buildBedrockGeometry：bones / X 镜像 / pivot / per-face uv / up 翻转', () => {
 	const cube = {
@@ -1481,6 +1424,13 @@ t('buildBlockstates：自定义模型资源路径时引用跟随', () => {
 t('buildObjReferenceJson：自定义模型资源路径时 .obj 引用跟随', () => {
 	const ref = L.buildObjReferenceJson({ namespace: 'kuayue', trackId: 'track', shape: 'x_ortho', textures: [], modelPath: 'custom/track' });
 	assert.strictEqual(ref.model, 'kuayue:models/custom/track/x_ortho.obj');
+});
+
+t('buildObjReferenceJson：自定义模组加载器前缀（forge→neoforge）', () => {
+	const forge = L.buildObjReferenceJson({ namespace: 'kuayue', trackId: 'track', shape: 'x_ortho', textures: [] });
+	assert.strictEqual(forge.loader, 'forge:obj', '缺省 loader 应为 forge:obj');
+	const neo = L.buildObjReferenceJson({ namespace: 'kuayue', trackId: 'track', shape: 'x_ortho', textures: [], loader: 'neoforge' });
+	assert.strictEqual(neo.loader, 'neoforge:obj', 'loader=neoforge 时 loader 应为 neoforge:obj');
 });
 
 console.log(`\n✅ logic.test.js 全部通过（${passed} 项）`);

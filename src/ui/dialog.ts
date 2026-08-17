@@ -40,6 +40,13 @@ export interface GenerateOutput {
 
 type PartName = 'left' | 'right' | 'tie';
 
+/**
+ * Temporarily disables the "Select a Tab" part-import buttons (extract the elements selected in an open
+ * tab). Set to true to restore the buttons. The pickTab action / extractSelectedPart code stays intact so
+ * the feature can be re-enabled without touching anything else.
+ */
+const TAB_IMPORT_ENABLED = false;
+
 /** Part selection state. Parts are the raw un-prefixed originals; prefixes are added uniformly at generation. */
 interface PartState {
 	left: PartModel | null;
@@ -177,7 +184,9 @@ function partRowEl(which: PartName): HTMLElement {
 	row.append(status);
 	const actions = el('div', 'ctg-part-actions');
 	actions.append(partButton('file', which, t('ctg.dialog.import_btn')));
-	actions.append(partButton('tab', which, t('ctg.dialog.pick_tab_btn')));
+	// "Select a Tab" import is temporarily disabled (see TAB_IMPORT_ENABLED); the handler stays wired
+	// in case the flag is flipped back on.
+	if (TAB_IMPORT_ENABLED) actions.append(partButton('tab', which, t('ctg.dialog.pick_tab_btn')));
 	if (isRight) actions.append(partButton('mirror', which, t('ctg.dialog.mirror_btn')));
 	row.append(actions);
 	return row;

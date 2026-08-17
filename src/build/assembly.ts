@@ -228,6 +228,22 @@ export function buildAllShapes(shapes: ShapeSpec[], textureByKey?: Map<string, T
 }
 
 /**
+ * Normalizes a face's texture reference to a uuid string. In a live Blockbench project a face's
+ * `texture` field may hold a **Texture instance** (FaceOptions.texture: Texture | UUID | false), not
+ * just a uuid string. Stringifying an instance gives "[object Object]" — which matches no texture uuid,
+ * so the texture is dropped (the classic "some parts lose their texture when extracting from a tab"
+ * bug). Resolve instances to their uuid so downstream key matching (extractSelectedPart /
+ * elementToCubeSpec) sees the real uuid.
+ */
+function faceTextureId(v: unknown): string | undefined {
+	if (v && typeof v === 'object') {
+		const u = (v as { uuid?: unknown }).uuid;
+		return typeof u === 'string' && u ? u : undefined;
+	}
+	return typeof v === 'string' && v ? v : undefined;
+}
+
+/**
  * Converts Blockbench elements (Cube/Group/Mesh) into the logic layer's RawElement[], for part
  * parsing. Used when extracting a part from the current project.
  */
@@ -253,15 +269,17 @@ export function elementsToRaw(elements: (Cube | Group | Mesh)[]): import('../log
 				const f: any = {};
 				if (face.uv) f.uv = [...face.uv];
 				if (face.rotation) f.rotation = face.rotation;
-				// Face texture UUID, for part-texture extraction and import mapping
-				if (face.texture) f.texture = face.texture;
+				// Face texture reference → uuid string, for part-texture extraction and import mapping
+				const texId = faceTextureId(face.texture);
+				if (texId) f.texture = texId;
 				faces[dir] = f;
 			}
 			if (Object.keys(faces).length) raw.faces = faces;
 			raws.push(raw);
 		} else if (el instanceof Mesh) {
 			// Mesh element: serialize via Blockbench's getSaveCopy (vertices/faces/origin/rotation);
-			// face textures are uuids (not indices), collected as source textures by extractSelectedPart
+			// face textures are normalized to uuids (not indices), collected as source textures by
+			// extractSelectedPart
 			const save = el.getSaveCopy();
 			const faces: any = {};
 			for (const [id, f] of Object.entries((save.faces ?? {}) as Record<string, any>)) {
@@ -270,7 +288,8 @@ export function elementsToRaw(elements: (Cube | Group | Mesh)[]): import('../log
 				if (f.vertices) out.vertices = [...f.vertices];
 				if (f.uv) out.uv = f.uv;
 				if (f.rotation) out.rotation = f.rotation;
-				if (f.texture != null && f.texture !== false) out.texture = String(f.texture);
+				const texId = faceTextureId(f.texture);
+				if (texId) out.texture = texId;
 				faces[id] = out;
 			}
 			raws.push({

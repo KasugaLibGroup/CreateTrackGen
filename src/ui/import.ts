@@ -3,7 +3,7 @@
  */
 
 import { elementsToRaw } from '../build/assembly';
-import { parseBbModel, extractFromElements, type RawElement } from '../logic/parts';
+import { parseBbModel, extractFromElements, textureUvSize, formatUsesPerTextureUv, type RawElement } from '../logic/parts';
 import { t } from '../i18n';
 import type { PartModel, SourceTexture } from '../logic/types';
 
@@ -48,7 +48,12 @@ export function pickBbModels(): Promise<ImportedFile[] | null> {
  */
 export function parseImportedBbModel(file: ImportedFile): PartModel {
 	const json = JSON.parse(String(file.content)) as Parameters<typeof parseBbModel>[0];
-	const part = parseBbModel(json);
+	// Resolve the format's real per_texture_uv_size flag from the runtime Formats registry, falling back
+	// to the id heuristic for formats the host doesn't expose. Only the free/generic model sets it true —
+	// for everything else the model resolution (not per-texture uv_width) is the UV size.
+	const fmt = json.meta?.model_format;
+	const perTextureUv = formatUsesPerTextureUv(fmt, (globalThis as any).Formats?.[fmt as string]?.per_texture_uv_size);
+	const part = parseBbModel(json, undefined, perTextureUv);
 	if (part.cubes.length === 0 && !part.hasMesh) {
 		throw new Error(t('ctg.import.no_elements', file.name));
 	}
@@ -152,16 +157,30 @@ export function extractSelectedPart(project?: ModelProject): PartModel {
 			if (f && f.texture != null) keys.add(String(f.texture));
 		}
 	}
+	const projFormat = (proj as any).format?.id as string | undefined;
+	// The format's real per_texture_uv_size flag (Blockbench exposes it on the ModelFormat instance) —
+	// only the free/generic model sets it true. Reading it directly instead of guessing from the id keeps
+	// the extracted size identical to what the tab's UV editor shows (Texture.getUVWidth()).
+	const projPerTextureUv = formatUsesPerTextureUv(projFormat, (proj as any).format?.per_texture_uv_size);
+	const projCanvas: [number, number] = [(proj as any).texture_width || 16, (proj as any).texture_height || 16];
 	const textures: SourceTexture[] = [];
 	for (const t of proj.textures ?? []) {
 		if (keys.has(t.uuid)) {
+			// The tab's elements' face UVs live in the texture's UV coordinate space (Blockbench's
+			// "uv size", Texture.getUVWidth()) — NOT the bitmap's pixel dimensions. textureUvSize
+			// mirrors getUVWidth: java block/item and other canvas-UV formats use the tab project's
+			// canvas size (what the UV editor's top-left shows), free/mesh formats use the texture's
+			// uv_width. Falling back to the bitmap size (t.width) would mis-size the workspace and sample
+			// only a corner of the image; hardcoding 16 loses canvas-UV tabs whose textures carry no
+			// per-texture uv_width.
+			const [w, h] = textureUvSize(projPerTextureUv, t, projCanvas);
 			textures.push({
 				key: t.uuid,
 				name: t.name,
 				// Export the bitmap via canvas to avoid referencing the old project's absolute file-link path
 				source: t.canvas ? t.canvas.toDataURL() : t.source,
-				width: t.width || t.uv_width || 16,
-				height: t.height || t.uv_height || 16,
+				width: w,
+				height: h,
 			});
 		}
 	}

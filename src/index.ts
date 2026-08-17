@@ -35,7 +35,7 @@ registerPlugin('create_track_gen', {
 	description: t('ctg.plugin.description'),
 	about: t('ctg.plugin.about'),
 	icon: 'icon.png',
-	version: '0.3.0',
+	version: '0.4.0',
 	variant: 'both',
 	tags: ['Minecraft: Java Edition', 'Exporter', 'Utility'],
 	onload() {

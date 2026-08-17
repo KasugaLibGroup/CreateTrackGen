@@ -209,6 +209,75 @@ t('parseBbTextures 以纹理数组下标为 key，分辨率取 resolution', () =
 	assert.strictEqual(textures[1].key, '1');
 });
 
+t('parseBbTextures：无 uv_width 的纹理回退到模型 resolution（不落到 16）', () => {
+	const json = {
+		meta: { model_format: 'java_block' },
+		resolution: { width: 64, height: 64 },
+		textures: [{ name: 'rail.png', id: '1', source: 'data:image/png;base64,AAA' }],
+	};
+	const { textureSize, textures } = L.parseBbTextures(json);
+	assert.deepStrictEqual(textureSize, [64, 64]);
+	assert.strictEqual(textures[0].width, 64, '无 uv_width 时应取模型 resolution 64，而非 16');
+	assert.strictEqual(textures[0].height, 64);
+});
+
+t('formatUsesPerTextureUv：仅 free/generic 为逐纹理 UV（Blockbench 默认 false），override 优先', () => {
+	// 对应 Format.per_texture_uv_size：只有 free/generic 设 true（java_block/java_item/modded_entity 等都是默认 false）
+	assert.strictEqual(L.formatUsesPerTextureUv('free'), true);
+	assert.strictEqual(L.formatUsesPerTextureUv('generic'), true);
+	assert.strictEqual(L.formatUsesPerTextureUv('java_block'), false);
+	assert.strictEqual(L.formatUsesPerTextureUv('modded_entity'), false, 'modded_entity 默认 per_texture_uv_size=false（画布 UV）');
+	assert.strictEqual(L.formatUsesPerTextureUv('bedrock'), false);
+	assert.strictEqual(L.formatUsesPerTextureUv(undefined), false);
+	// 传入真实格式对象的 per_texture_uv_size 时以它为准（绕开 id 猜测）
+	assert.strictEqual(L.formatUsesPerTextureUv('free', false), false);
+	assert.strictEqual(L.formatUsesPerTextureUv('modded_entity', true), true);
+});
+
+t('textureUvSize：画布优先（per_texture_uv=false，忽略不一致 uv_width），free 用逐纹理 uv_width', () => {
+	// java_block 等画布 UV 格式：Texture.getUVWidth() 返回画布尺寸（64），纹理 uv_width 16 被忽略
+	assert.deepStrictEqual(L.textureUvSize(false, { uv_width: 16, uv_height: 16 }, [64, 64]), [64, 64]);
+	// free（逐纹理 UV）：uv_width 优先
+	assert.deepStrictEqual(L.textureUvSize(true, { uv_width: 32, uv_height: 32 }, [64, 64]), [32, 32]);
+	// 双方缺省回退到 16
+	assert.deepStrictEqual(L.textureUvSize(false, {}, undefined), [16, 16]);
+	// parseBbTextures 经 textureUvSize：java_block 纹理 uv_width 16 也取 resolution 64
+	const part = L.parseBbTextures({
+		meta: { model_format: 'java_block' },
+		resolution: { width: 64, height: 64 },
+		textures: [{ name: 'rail.png', id: '1', uv_width: 16, uv_height: 16, source: 'data:image/png;base64,AAA' }],
+	});
+	assert.strictEqual(part.textures[0].width, 64, 'java_block 纹理 uv_width 16 应被画布 64 覆盖');
+});
+
+t('parseBbTextures：free 模型分辨率不是 UV 尺寸——resolution 16 但 uv_width 64 取 64（回归）', () => {
+	// 用户真实样例 test_rail_obj.bbmodel：free、resolution 16×16、纹理 uv_width 64×64。
+	// UV 编辑器显示 64×64（getUVWidth=uv_width），零件纹理/分辨率必须取 64，而不是画布 16。
+	const part = L.parseBbTextures({
+		meta: { model_format: 'free' },
+		resolution: { width: 16, height: 16 },
+		textures: [{ name: 'standard_track_tie.png', id: '4', uv_width: 64, uv_height: 64, source: 'data:image/png;base64,AAA' }],
+	});
+	assert.deepStrictEqual(part.textureSize, [64, 64], 'free 零件分辨率应为纹理 UV 尺寸 64，而非模型 resolution 16');
+	assert.strictEqual(part.textures[0].width, 64);
+	assert.strictEqual(part.textures[0].height, 64);
+});
+
+t('parseBbTextures：per_texture_uv=false 的 modded_entity 用画布（override 生效）', () => {
+	// modded_entity 默认 per_texture_uv_size=false：Texture.getUVWidth()=Project.texture_width（画布）。
+	// 传入真实格式标志后应取画布 64，而不是纹理 uv_width 32。
+	const part = L.parseBbTextures(
+		{
+			meta: { model_format: 'modded_entity' },
+			resolution: { width: 64, height: 64 },
+			textures: [{ name: 'rail.png', id: '1', uv_width: 32, uv_height: 32, source: 'data:image/png;base64,AAA' }],
+		},
+		false
+	);
+	assert.deepStrictEqual(part.textureSize, [64, 64], 'modded_entity 零件分辨率应为画布 64');
+	assert.strictEqual(part.textures[0].width, 64, 'modded_entity 纹理 UV 尺寸应为画布 64');
+});
+
 t('parseBbModel 面纹理引用归一化为数组下标，与 parseBbTextures 的 key 对齐', () => {
 	const part = L.parseBbModel(texBbModel);
 	assert.deepStrictEqual(part.textureSize, [64, 64]);

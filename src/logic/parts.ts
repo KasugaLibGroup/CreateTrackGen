@@ -101,6 +101,36 @@ export function isFreeModelFormat(format: string | undefined): boolean {
 }
 
 /**
+ * Whether a model format gives each texture its own UV size — Blockbench's `Format.per_texture_uv_size`.
+ * Only the free/generic model actually sets it true; java block/item, modded entity, bedrock, … keep UVs
+ * in the shared resolution canvas (the flag defaults to false — see `js/io/format.ts`). The optional
+ * `perTextureUv` override lets callers pass the real flag read from a live format object
+ * (`Format.per_texture_uv_size` / `Formats[id].per_texture_uv_size`) instead of trusting the id heuristic.
+ */
+export function formatUsesPerTextureUv(format: string | undefined, perTextureUv?: boolean): boolean {
+	if (perTextureUv !== undefined) return perTextureUv;
+	return format === 'free' || format === 'generic';
+}
+
+/**
+ * A texture's UV size, mirroring Blockbench's `Texture.getUVWidth()`: when per-texture UV is on the
+ * texture's `uv_width` wins; otherwise the shared canvas (resolution) wins — so a texture whose
+ * `uv_width` disagrees with the canvas can't mis-size the part (the "both tabs show 64×64 but the rail
+ * exports as 16×16" bug). Both fall back to the other, then 16.
+ */
+export function textureUvSize(
+	perTextureUv: boolean,
+	tex: { uv_width?: number; uv_height?: number },
+	canvas: [number, number] | undefined
+): [number, number] {
+	const cw = canvas?.[0];
+	const ch = canvas?.[1];
+	return perTextureUv
+		? [tex.uv_width || cw || 16, tex.uv_height || ch || 16]
+		: [cw || tex.uv_width || 16, ch || tex.uv_height || 16];
+}
+
+/**
  * The example rail / tie part geometry — a plain box sized after test/sample_parts
  * (test_rail: 2.4 wide × 2.8 tall × 8 long; test_tie: ~32 wide × ~4 tall × ~3.5 deep), centered at
  * the format's symmetry point (Java (8,8), others (0,0)), bottom face at y=0. Used by the
@@ -345,34 +375,52 @@ export function normalize(cubes: CubeSpec[], symmetry?: Vec3, meshes: MeshSpec[]
  * the array index (String(index)), aligning with the face-texture references produced by
  * elementToCubeSpec, so the assembly layer can resolve face textures to imported Textures.
  *
- * Resolution priority: resolution → meta.texture_size → the uv size shared by all textures → undefined.
- * Models with no textures (or missing sources) return an empty array and undefined size.
+ * Canvas priority: resolution → meta.texture_size → undefined.
+ * Each texture's UV size (width/height) is derived via textureUvSize (non-per-texture-UV formats → the
+ * shared resolution canvas; free/mesh formats → per-texture uv_width) — never a hardcoded 16, otherwise
+ * a java_block model whose textures carry no (or a disagreeing) uv_width collapses to 16×16 while the
+ * model is 64×64, and the exported texture_size / UV conversion comes out wrong.
+ * The part resolution mirrors that rule: for non-per-texture-UV formats it is the model resolution (the
+ * canvas IS the UV size); for per-texture-UV formats it is the UV size shared by the textures — a free
+ * model can have a 16×16 resolution yet 64×64 textures (what the UV editor / getUVWidth() reports), and
+ * using the canvas there would mis-size the workspace and sample only a corner of the image.
+ * Models with no textures (or missing sources) return an empty array and an undefined size.
  */
-export function parseBbTextures(json: RawBbModel): { textureSize?: [number, number]; textures: SourceTexture[] } {
+export function parseBbTextures(
+	json: RawBbModel,
+	perTextureUv?: boolean,
+	format?: string
+): { textureSize?: [number, number]; textures: SourceTexture[] } {
+	const resolution: [number, number] | undefined =
+		json.resolution?.width && json.resolution?.height
+			? [json.resolution.width, json.resolution.height]
+			: json.meta?.texture_size && json.meta.texture_size.length === 2
+				? [json.meta.texture_size[0], json.meta.texture_size[1]]
+				: undefined;
+	const perUv = formatUsesPerTextureUv(format ?? json.meta?.model_format, perTextureUv);
 	const raws = json.textures ?? [];
 	const textures: SourceTexture[] = [];
 	raws.forEach((t, i) => {
 		if (!t.source) return;
+		const [w, h] = textureUvSize(perUv, t, resolution);
 		textures.push({
 			key: String(i),
 			name: t.name ?? `texture_${i}`,
 			source: t.source,
-			width: t.uv_width ?? 16,
-			height: t.uv_height ?? 16,
+			width: w,
+			height: h,
 		});
 	});
-	let textureSize: [number, number] | undefined;
-	if (json.resolution?.width && json.resolution?.height) {
-		textureSize = [json.resolution.width, json.resolution.height];
-	} else if (json.meta?.texture_size && json.meta.texture_size.length === 2) {
-		textureSize = [json.meta.texture_size[0], json.meta.texture_size[1]];
-	} else if (textures.length > 0) {
+	// The size shared by every texture, when they all agree; undefined otherwise / when none.
+	const sharedSize = (): [number, number] | undefined => {
+		if (textures.length === 0) return undefined;
 		const w = textures[0].width;
 		const h = textures[0].height;
-		if (textures.every((t) => t.width === w && t.height === h)) {
-			textureSize = [w, h];
-		}
-	}
+		return textures.every((t) => t.width === w && t.height === h) ? [w, h] : undefined;
+	};
+	// Per-texture-UV: the canvas/resolution is NOT the UV size — the per-texture UV size wins.
+	// Non-per-texture-UV: the canvas (resolution) IS the UV size. Either may fall back to the other.
+	const textureSize: [number, number] | undefined = perUv ? sharedSize() ?? resolution : resolution ?? sharedSize();
 	return { textureSize, textures };
 }
 
@@ -455,11 +503,11 @@ export function targetFormatForParts(parts: { hasMesh?: boolean }[], currentForm
 }
 
 /** Parses .bbmodel JSON → PartModel (auto-normalized; symmetry point from meta.model_format), with texture info attached */
-export function parseBbModel(json: RawBbModel, format?: string): PartModel {
+export function parseBbModel(json: RawBbModel, format?: string, perTextureUv?: boolean): PartModel {
 	const fmt = format ?? json.meta?.model_format;
 	const elements = json.elements ?? [];
 	const part = normalize(elementsToCubeSpecs(elements), symmetryPointForFormat(fmt), extractMeshes(elements));
-	const tex = parseBbTextures(json);
+	const tex = parseBbTextures(json, perTextureUv, fmt);
 	part.textureSize = tex.textureSize;
 	part.textures = tex.textures;
 	return part;

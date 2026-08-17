@@ -88,9 +88,15 @@ function joinPath(dir: string, ...rel: string[]): string {
 	return `${dir.replace(/[\\/]+$/, '')}/${rel.join('/')}`;
 }
 
-/** A texture's actual pixel size (width, height) */
+/**
+ * A texture's UV size (uv_width × uv_height), used as the model texture_size / UV-normalization base.
+ * UV coordinates live in the texture's UV space (what Texture.getUVWidth() reports), not the bitmap's
+ * pixel dimensions — the imported texture's uv_width is set from the part's UV size during generation,
+ * so reading it first keeps the exported texture_size consistent with the face UVs (falling back to the
+ * bitmap size only as a last resort).
+ */
 function textureSizeOf(tex: Texture): [number, number] {
-	return [tex.width || tex.uv_width || 16, tex.height || tex.uv_height || 16];
+	return [tex.uv_width || tex.width || 16, tex.uv_height || tex.height || 16];
 }
 
 /** data URL → Uint8Array (for writing the PNG) */

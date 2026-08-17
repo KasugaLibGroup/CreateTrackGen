@@ -351,13 +351,18 @@ const tabProject = {
 	format: { id: 'java_block' },
 	texture_width: 64,
 	texture_height: 64,
-	textures: [{ uuid: 'tex-tab', name: 'part.png', width: 64, height: 64, source: 'data:image/png;base64,tab', canvas: null }],
+	// java_block 标签页：UV 尺寸 = 标签页项目的 texture_size（UV 编辑器左上角显示的 64×64），
+	// Texture.getUVWidth() 忽略逐纹理 uv_width。纹理故意带不一致的 uv_width 16×16——若提取时
+	// 用了 uv_width 就会落到 16×16（正是「两个 tab 都显示 64x64、rail 却导出 16x16」bug 的来源）。
+	textures: [{ uuid: 'tex-tab', name: 'part.png', uv_width: 16, uv_height: 16, source: 'data:image/png;base64,tab', canvas: null }],
 	selected_elements: [
 		new global.Cube({
 			name: 'rail',
 			from: [-2, 0, 0],
 			to: [2, 4, 16],
-			faces: { up: { uv: [0, 0, 8, 8], texture: 'tex-tab' } },
+			// 真实 Blockbench 中面的 texture 可能是 Texture 实例（FaceOptions.texture: Texture | UUID | false），
+			// 不一定是 uuid 字符串。用对象引用模拟——若不归一化到 uuid 会 String→"[object Object]" 而丢失纹理
+			faces: { up: { uv: [0, 0, 8, 8], texture: { uuid: 'tex-tab' } } },
 		}),
 	],
 };
@@ -398,12 +403,14 @@ global.Canvas = {
 
 // 零件样例：一个单方块左右的零件（关于 x=0 对称、底面 y=0），带 64×64 纹理
 // 面的 texture 是纹理数组下标（0），与 .bbmodel 的约定一致
-// 钢轨零件：单根钢轨（长 16px、沿 Z、关于 x=0 对称）
+// 钢轨零件：单根钢轨（长 16px、沿 Z、关于 x=0 对称）。
+// 纹理不带 uv_width/uv_height——java_block 的面 UV 处于模型 resolution（64×64）画布空间，
+// 纹理大小应回退到 resolution（64），而不是落到 16×16
 const railPartJson = {
 	meta: { model_format: 'java_block' },
 	resolution: { width: 64, height: 64 },
 	textures: [
-		{ name: 'rail.png', id: '1', uv_width: 64, uv_height: 64, source: 'data:image/png;base64,sample' },
+		{ name: 'rail.png', id: '1', source: 'data:image/png;base64,sample' },
 	],
 	elements: [
 		{ name: 'rail', from: [-2, 0, 0], to: [2, 4, 16], faces: { north: { uv: [0, 0, 8, 8], texture: 0 }, south: { uv: [0, 0, 8, 8], texture: 0 }, up: { uv: [0, 0, 8, 8], texture: 0 }, down: { uv: [0, 0, 8, 8], texture: 0 } } },
@@ -919,6 +926,11 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	// 右轨由左轨镜像生成，复用左轨的纹理源：导入 L(与 R 共享) + T + 2 张传送门纹理共 4 张位图
 	assert.strictEqual(Project.textures.length, 4, '❌ 左轨（及其镜像右轨）+ 枕木 + 2 张传送门纹理应导入 4 张纹理');
 	assert(Project.textures[0].source.includes('sample1'), '❌ 导入纹理应保留位图数据');
+	// .bbmodel 纹理无 uv_width 时取模型 resolution（64×64）：导入纹理的 uv_width 应为 64，而非 16
+	const railTex = Project.textures.find((t) => t.name === 'rail.png');
+	assert(railTex, '❌ 应导入 rail.png 纹理');
+	assert.strictEqual(railTex.uv_width, 64, '❌ .bbmodel 无 uv_width 的纹理应回退到模型 resolution 64，而非 16');
+	assert.strictEqual(railTex.uv_height, 64, '❌ .bbmodel 无 uv_height 的纹理应回退到模型 resolution 64，而非 16');
 	// 生成的 cube 面引用 3 张纹理（镜像右轨复用左轨的 L 纹理，枕木用 T 纹理，覆层用 mip）
 	const usedTex = new Set();
 	for (const c of createdCubes) {
@@ -965,6 +977,11 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	assert(stateB.left, '❌ 从标签页应提取到左轨零件');
 	assert.strictEqual(stateB.left.cubes.length, 1, '❌ 标签页零件应含 1 个 cube');
 	assert.strictEqual(stateB.left.textures[0].key, 'tex-tab', '❌ 标签页零件应携带选中元素的纹理');
+	// 标签页零件纹理大小取 UV 尺寸：java_block 的 UV 尺寸 = 标签页项目的 texture_size（左上角显示的
+	// 64×64，getUVWidth 语义），忽略纹理不一致的 uv_width（16×16）——否则会落到 16×16
+	assert.strictEqual(stateB.left.textures[0].width, 64, '❌ 标签页零件纹理宽应为 UV 尺寸（java_block 画布 64）而非 uv_width 16');
+	assert.strictEqual(stateB.left.textures[0].height, 64, '❌ 标签页零件纹理高应为 UV 尺寸（java_block 画布 64）而非 uv_height 16');
+	assert.deepStrictEqual(stateB.left.textureSize, [64, 64], '❌ 标签页零件 textureSize 应取 UV 尺寸（java_block 画布）');
 	nextPartKind = 'tie';
 	await driverB.actions.importPart('tie');
 	await driverB.actions.mirrorRight();
@@ -974,6 +991,71 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	assert.strictEqual(Project.name, '标签页轨道', '❌ 场景 B 新工作区名应取自用户输入');
 	assert.strictEqual(Project.format.id, 'java_block', '❌ 场景 B 全 cube 应为 Java 方块模型');
 	console.log('   选择一个标签页 → 提取该标签页选中元素 ✓');
+
+	// ── 场景 B2：free（per_texture_uv）标签页的 UV 尺寸取「组对应纹理」的 uv_width ──
+	// Blockbench 里 UV 编辑器左上角的 uv size 会随选中的组变化（= 选中纹理的 getUVWidth()）。
+	// free 格式 per_texture_uv_size = true → 取纹理自身 uv_width（16），而不是整体画布 64
+	const freeTabProject = {
+		uuid: 'free-tab-project-uuid',
+		name: '自由零件库',
+		format: { id: 'free' },
+		texture_width: 64,
+		texture_height: 64,
+		textures: [{ uuid: 'tex-free', name: 'rail_free.png', uv_width: 16, uv_height: 16, source: 'data:image/png;base64,free', canvas: null }],
+		selected_elements: [
+			new global.Cube({
+				name: 'rail',
+				from: [-2, 0, 0],
+				to: [2, 4, 16],
+				faces: { up: { uv: [0, 0, 8, 8], texture: 'tex-free' } },
+			}),
+		],
+	};
+	global.ModelProject.all = [freeTabProject];
+	messageBoxQueue.push((options, cb) => cb('free-tab-project-uuid'));
+	const b2 = genAction.click();
+	const dlgB2 = lastDialog;
+	const driverB2 = dlgB2.config._driver;
+	await driverB2.actions.pickTab('left');
+	const stateB2 = driverB2.getState();
+	assert.strictEqual(stateB2.left.textures[0].width, 16, '❌ free 标签页零件纹理宽应取组对应纹理的 uv_width 16，而非画布 64');
+	assert.strictEqual(stateB2.left.textures[0].height, 16, '❌ free 标签页零件纹理高应取组对应纹理的 uv_height 16');
+	assert.deepStrictEqual(stateB2.left.textureSize, [16, 16], '❌ free 标签页零件 textureSize 应取组对应纹理的 uv_width 16');
+	dlgB2.config.onCancel();
+	console.log('   free 标签页 → 零件纹理大小取组对应纹理的 uv_width（per_texture_uv）✓');
+
+	// ── 场景 B3：modded_entity 标签页（per_texture_uv_size=false，非 java）取画布尺寸 ──
+	// 只有 free/generic 把 per_texture_uv_size 设为 true；modded_entity 等格式默认 false，
+	// Texture.getUVWidth() = Project.texture_width（画布 64），不是纹理 uv_width 16。
+	// 插件必须读格式对象上的真实 per_texture_uv_size 标志（而非按 id 猜测成逐纹理 UV）。
+	const moddedEntityTabProject = {
+		uuid: 'modded-entity-tab-project-uuid',
+		name: '实体零件库',
+		format: { id: 'modded_entity', per_texture_uv_size: false },
+		texture_width: 64,
+		texture_height: 64,
+		textures: [{ uuid: 'tex-mod', name: 'rail_mod.png', uv_width: 16, uv_height: 16, source: 'data:image/png;base64,mod', canvas: null }],
+		selected_elements: [
+			new global.Cube({
+				name: 'rail',
+				from: [-2, 0, 0],
+				to: [2, 4, 16],
+				faces: { up: { uv: [0, 0, 8, 8], texture: 'tex-mod' } },
+			}),
+		],
+	};
+	global.ModelProject.all = [moddedEntityTabProject];
+	messageBoxQueue.push((options, cb) => cb('modded-entity-tab-project-uuid'));
+	const b3 = genAction.click();
+	const dlgB3 = lastDialog;
+	const driverB3 = dlgB3.config._driver;
+	await driverB3.actions.pickTab('left');
+	const stateB3 = driverB3.getState();
+	assert.strictEqual(stateB3.left.textures[0].width, 64, '❌ modded_entity 标签页零件纹理宽应取画布 64（per_texture_uv=false），而非 uv_width 16');
+	assert.strictEqual(stateB3.left.textures[0].height, 64, '❌ modded_entity 标签页零件纹理高应取画布 64');
+	assert.deepStrictEqual(stateB3.left.textureSize, [64, 64], '❌ modded_entity 标签页零件 textureSize 应取画布 64');
+	dlgB3.config.onCancel();
+	console.log('   modded_entity 标签页（per_texture_uv=false）→ 零件纹理大小取画布 64 ✓');
 
 	// ── 场景 C：零件含 mesh 组 → 新工作区为自由模型，基础分组含 mesh 元素 ──
 	meshImport = true;

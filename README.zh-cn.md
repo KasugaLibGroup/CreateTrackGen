@@ -75,6 +75,7 @@ create_track_gen/
 ├── lang/                  # en.json / zh.json — 国际化，可直接改无需重建
 ├── test/                  # 逻辑单测 + 冒烟测试 + 示例零件
 ├── README.md / README.zh-cn.md
+├── CHANGELOG.md / CHANGELOG.zh-cn.md
 └── package.json
 ```
 

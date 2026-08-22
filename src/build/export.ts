@@ -42,6 +42,8 @@ import {
 } from '../logic/export';
 import type { CubeFaceDirection, Vec3 } from '../logic/types';
 import { isFreeModelFormat } from '../logic/parts';
+import { ProfileStore, type ExportProfileValues, type StoredProfile } from '../logic/profile';
+import { blockbenchStorage, buildProfileWidget, type ProfileDriver } from '../ui/profile';
 import { t } from '../i18n';
 import type { DialogOptions } from 'blockbench-types/generated/interface/dialog';
 
@@ -318,6 +320,8 @@ export interface ExportDriver {
 	setTexturePath(key: string, v: string): void;
 	confirm(): boolean;
 	getState(): ExportFormState;
+	/** Saved parameter-value batches (profiles); the export root is not included */
+	profiles: ProfileDriver<ExportProfileValues>;
 }
 
 /** Default export root: the current project file's directory when available, otherwise create_track_export under the desktop / home */
@@ -358,6 +362,57 @@ function isValidResourcePath(p: string): boolean {
 	if (!/^[a-z0-9/._-]+$/.test(p)) return false;
 	if (p.split('/').some((seg) => seg === '..')) return false;
 	return true;
+}
+
+/**
+ * Applies an export profile to the dialog state (mode / namespace / trackId / loader / modelPath +
+ * ordered texture paths). The export root (save destination path) is not part of a profile.
+ * forceObj locks the mode to 'obj' regardless of the saved value (free/generic workspaces).
+ * State-only: the caller re-renders the DOM inputs (renderExportPaths is scoped to the dialog).
+ */
+function applyExportProfile(
+	state: ExportFormState,
+	profile: StoredProfile<ExportProfileValues> | undefined,
+	forceObj: boolean
+): void {
+	if (!profile) return;
+	const v = profile.values;
+	if (!forceObj) state.mode = v.mode as ExportMode;
+	state.namespace = v.namespace;
+	state.trackId = v.trackId;
+	state.loader = v.loader;
+	state.modelPath = v.modelPath;
+	state.dirty.model = true;
+	// Texture paths: match the saved {key,path} entries onto the current dialog's textures by key
+	// first, then by position — a "batch of values" that survives texture-set changes
+	const saved = v.texturePaths ?? [];
+	const keys = Object.keys(state.texturePaths);
+	for (const [i, key] of keys.entries()) {
+		const hit = saved.find((s) => s.key === key);
+		const path = hit?.path ?? saved[i]?.path;
+		if (path) {
+			state.texturePaths[key] = path;
+			state.dirty.textures[key] = true;
+		}
+	}
+}
+
+/**
+ * Saves the export dialog's current parameter values into a profile (excluding the export root).
+ * The caller should syncFromDom() first so the DOM values the user actually typed are captured.
+ */
+function saveExportProfile(state: ExportFormState, store: ProfileStore<ExportProfileValues>, name: string): void {
+	store.put({
+		name,
+		values: {
+			mode: state.mode,
+			namespace: state.namespace,
+			trackId: state.trackId,
+			loader: state.loader,
+			modelPath: state.modelPath,
+			texturePaths: Object.keys(state.texturePaths).map((key) => ({ key, path: state.texturePaths[key] })),
+		},
+	});
 }
 
 // ── Export dialog styles (same style as the generate dialog) ────────────────
@@ -438,6 +493,42 @@ const EXPORT_STYLE = `
 	margin-top: 2px;
 	line-height: 1.5;
 }
+/* Profiles widget (saved parameter-value batches) */
+#create-track-gen-export-dialog .ctg-profile {
+	margin: 16px 0 0;
+	padding: 10px 12px;
+	border: 1px solid var(--color-border, #3a3a3a);
+	border-radius: 6px;
+}
+#create-track-gen-export-dialog .ctg-profile-row {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	flex-wrap: wrap;
+	margin-top: 6px;
+}
+#create-track-gen-export-dialog .ctg-profile-select,
+#create-track-gen-export-dialog .ctg-profile-name {
+	flex: 1;
+	min-width: 0;
+	box-sizing: border-box;
+	background: var(--color-input, #202020);
+	color: var(--text-color, #eee);
+	border: 1px solid var(--color-border, #555);
+	border-radius: 3px;
+	padding: 0 10px;
+	font: inherit;
+}
+/* 名称输入框：加高 + 显式行高，让下划线等下沉文字完整显示 */
+#create-track-gen-export-dialog .ctg-profile-name {
+	padding: 9px 10px;
+	line-height: 1.5;
+}
+/* 原生下拉框：Chromium 里 line-height 会把选中文字往下推，改为固定高度让文字垂直居中 */
+#create-track-gen-export-dialog .ctg-profile-select {
+	height: 40px;
+	line-height: normal;
+}
 #create-track-gen-export-dialog .dialog_bar.button_bar { text-align: right; }
 `;
 
@@ -506,6 +597,8 @@ export function promptExportOptions(
 		recomputeDefaults(state);
 
 		let dialogNode: HTMLElement | null = null;
+		// Saved parameter batches (profiles); persisted through Blockbench.storage
+		const profileStore = new ProfileStore<ExportProfileValues>(blockbenchStorage(), 'create_track_gen/export_profiles');
 
 		const errorBox = (message: string): void => {
 			Blockbench.showMessageBox({ title: t('ctg.invalid_input'), message, buttons: [t('ctg.ok')], confirm: 0 });
@@ -598,6 +691,27 @@ export function promptExportOptions(
 			getState() {
 				return state;
 			},
+			profiles: {
+				list: () => profileStore.list(),
+				save: (name) => {
+					syncFromDom(); // adopt the values the user actually typed in the DOM inputs
+					saveExportProfile(state, profileStore, name);
+				},
+				apply: (name) => {
+					const p = profileStore.find(name);
+					if (!p) return;
+					applyExportProfile(state, p, forceObj);
+					if (dialogNode) {
+						renderExportPaths(dialogNode, state);
+						renderExportTextInputs(dialogNode, state);
+						if (!forceObj) {
+							const sel = dialogNode.querySelector<HTMLSelectElement>('[data-export="mode"]');
+							if (sel) sel.value = state.mode;
+						}
+					}
+				},
+				remove: (name) => profileStore.remove(name),
+			},
 		};
 
 		/** Syncs the resource paths in state back to the DOM inputs */
@@ -612,6 +726,17 @@ export function promptExportOptions(
 				const input = node.querySelector<HTMLInputElement>(`[data-export="texture"][data-tex-key="${tk}"]`);
 				if (input) input.value = s.texturePaths[tk];
 			}
+		};
+
+		/** Syncs the plain text inputs (namespace / track id / loader) from state back to the DOM — renderExportPaths only covers the resource paths */
+		const renderExportTextInputs = (node: HTMLElement, s: ExportFormState): void => {
+			const set = (key: string, v: string): void => {
+				const input = node.querySelector<HTMLInputElement>(`[data-export="${key}"]`);
+				if (input) input.value = v;
+			};
+			set('namespace', s.namespace);
+			set('trackid', s.trackId);
+			set('loader', s.loader);
 		};
 
 		/** A plain text box (namespace / resource path etc.), data-export identifies the binding target */
@@ -811,7 +936,8 @@ export function promptExportOptions(
 			id: 'create-track-gen-export-dialog',
 			title: t('ctg.export.title'),
 			icon: 'export',
-			width: 780,
+			// 0.8× 视口宽度（Blockbench 对话框宽度是像素值；Node 冒烟测试无 window，回退固定宽度）
+			width: Math.round((typeof window === 'undefined' ? 1400 : window.innerWidth) * 0.8),
 			buttons: [t('ctg.export_btn'), t('ctg.cancel')],
 			confirmIndex: 0,
 			cancelIndex: 1,
@@ -820,6 +946,30 @@ export function promptExportOptions(
 				if (!node) return;
 				dialogNode = node;
 				wireExportDom(node);
+				// Profiles widget: append to the right (paths) column, at the bottom
+				const rightCol = node.querySelectorAll<HTMLElement>('.ctg-export > .ctg-col')[1];
+				if (rightCol) {
+					const widget = buildProfileWidget({
+						list: () => profileStore.list(),
+						apply: (name) => {
+							const p = profileStore.find(name);
+							if (!p) return;
+							applyExportProfile(state, p, forceObj);
+							renderExportPaths(node, state);
+							renderExportTextInputs(node, state);
+							if (!forceObj) {
+								const sel = node.querySelector<HTMLSelectElement>('[data-export="mode"]');
+								if (sel) sel.value = state.mode;
+							}
+						},
+						save: (name) => {
+							syncFromDom();
+							saveExportProfile(state, profileStore, name);
+						},
+						remove: (name) => profileStore.remove(name),
+					});
+					if (widget) rightCol.append(widget);
+				}
 			},
 			onConfirm() {
 				return confirmExport() ? undefined : false;

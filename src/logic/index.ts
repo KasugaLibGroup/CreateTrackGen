@@ -7,3 +7,4 @@ export * from './parts';
 export * from './transform';
 export * from './generator';
 export * from './export';
+export * from './profile';

@@ -27,7 +27,9 @@ import { consistentTextureSize, scopeTextureKeys, targetFormatForParts } from '.
 import { mirrorPartYz } from '../logic/transform';
 import { t } from '../i18n';
 import type { PartModel, PortalConfig, ShapeSpec, SourceTexture, TrackConfig } from '../logic/types';
+import { ProfileStore, type GenerateProfileValues } from '../logic/profile';
 import { pickBbModels, parseImportedBbModel, extractSelectedPart, pickTabProject, pickPortalTrackTexture, pickPortalMipTexture } from './import';
+import { blockbenchStorage, buildProfileWidget, type ProfileDriver } from './profile';
 import { createTrackWorkspace } from '../build/workspace';
 
 /** The final output of the dialog flow */
@@ -79,6 +81,8 @@ interface PartActions {
 interface ConfigDriver {
 	actions: PartActions;
 	getState(): PartState;
+	/** Saved parameter-value batches (profiles); the part/texture source files are not included */
+	profiles: ProfileDriver<GenerateProfileValues>;
 }
 
 // ── Dialog styles: two-column layout (left part sources + right config form) ──
@@ -127,6 +131,42 @@ const DIALOG_STYLE = `
 }
 #create-track-gen-dialog .ctg-btn:hover { border-color: var(--active-color, #4caf50); color: var(--active-color, #4caf50); }
 #create-track-gen-dialog .ctg-hint { font-size: 12px; color: var(--color-subtle_text, #8a8a8a); margin-top: 2px; line-height: 1.5; }
+/* Profiles widget (saved parameter-value batches) */
+#create-track-gen-dialog .ctg-profile {
+	margin: 16px 0 0;
+	padding: 10px 12px;
+	border: 1px solid var(--color-border, #3a3a3a);
+	border-radius: 6px;
+}
+#create-track-gen-dialog .ctg-profile-row {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	flex-wrap: wrap;
+	margin-top: 6px;
+}
+#create-track-gen-dialog .ctg-profile-select,
+#create-track-gen-dialog .ctg-profile-name {
+	flex: 1;
+	min-width: 0;
+	box-sizing: border-box;
+	background: var(--color-input, #202020);
+	color: var(--text-color, #eee);
+	border: 1px solid var(--color-border, #555);
+	border-radius: 3px;
+	padding: 0 10px;
+	font: inherit;
+}
+/* 名称输入框：加高 + 显式行高，让下划线等下沉文字完整显示 */
+#create-track-gen-dialog .ctg-profile-name {
+	padding: 9px 10px;
+	line-height: 1.5;
+}
+/* 原生下拉框：Chromium 里 line-height 会把选中文字往下推，改为固定高度让文字垂直居中 */
+#create-track-gen-dialog .ctg-profile-select {
+	height: 40px;
+	line-height: normal;
+}
 /* Bottom buttons (OK / Cancel) pinned to the bottom-right */
 #create-track-gen-dialog .dialog_bar.button_bar { text-align: right; }
 `;
@@ -372,6 +412,63 @@ function roundDisplay(n: number, digits = 4): number {
 	return Number(n.toFixed(digits));
 }
 
+/** The generate dialog's form config, keyed by form element id (each entry carries its current value) */
+type GenerateForm = Record<string, { value: any }>;
+
+/**
+ * Reads the generate dialog's current parameter values (DOM inputs take precedence; falls back to the
+ * form config defaults — the Node smoke-test path without a document).
+ */
+function readGenerateValues(form: GenerateForm, node: HTMLElement | null): GenerateProfileValues {
+	const num = (id: string, fallback: number): number => {
+		if (node) {
+			const input = node.querySelector<HTMLInputElement>(`input#${id}`);
+			if (input && input.value !== '') {
+				const v = parseFloat(input.value);
+				if (Number.isFinite(v)) return v;
+			}
+		}
+		const def = Number(form[id]?.value);
+		return Number.isFinite(def) ? def : fallback;
+	};
+	const text = (id: string, fallback: string): string => {
+		const input = node?.querySelector<HTMLInputElement>(`input#${id}`);
+		const v = input?.value.trim();
+		return v ? v : (String(form[id]?.value ?? '') || fallback);
+	};
+	return {
+		gauge: num('gauge', DEFAULT_GAUGE_PX),
+		height: num('height', 0),
+		yoffset: num('yoffset', 0),
+		name: text('name', ''),
+	};
+}
+
+/**
+ * Applies profile values to the generate dialog (form config defaults + DOM inputs). The gauge is
+ * stored in px; mm / inch are re-derived so all three fields stay consistent.
+ */
+function applyGenerateValues(form: GenerateForm, node: HTMLElement | null, values: GenerateProfileValues): void {
+	form.gauge.value = values.gauge;
+	form.gauge_mm.value = roundDisplay(pxToMM(values.gauge));
+	form.gauge_inch.value = roundDisplay(pxToInch(values.gauge));
+	form.height.value = values.height;
+	form.yoffset.value = values.yoffset;
+	form.name.value = values.name;
+	if (node) {
+		const set = (id: string, v: string | number): void => {
+			const input = node.querySelector<HTMLInputElement>(`input#${id}`);
+			if (input) input.value = String(v);
+		};
+		set('gauge', values.gauge);
+		set('gauge_mm', roundDisplay(pxToMM(values.gauge)));
+		set('gauge_inch', roundDisplay(pxToInch(values.gauge)));
+		set('height', values.height);
+		set('yoffset', values.yoffset);
+		set('name', values.name);
+	}
+}
+
 /**
  * Gauge three-field (px / mm / inch) cross-conversion: pressing Enter in any input uses that value as
  * the basis and auto-updates the other two (px is the basis used by generation). Blockbench number/text
@@ -497,12 +594,17 @@ export function runGenerateWizard(): Promise<GenerateOutput | null> {
 
 		let dialogNode: HTMLElement | null = null;
 		const actions = createPartActions(state, () => renderStatus(state, dialogNode));
+		// Saved parameter batches (profiles); persisted through Blockbench.storage
+		const profileStore = new ProfileStore<GenerateProfileValues>(blockbenchStorage(), 'create_track_gen/generate_profiles');
+		// The dialog's form config, read at call time (config is initialized by then)
+		const form = (): GenerateForm => config.form as unknown as GenerateForm;
 
 		const config = {
 			id: 'create-track-gen-dialog',
 			title: t('ctg.dialog.title'),
 			icon: 'train',
-			width: 700,
+			// 0.8× 视口宽度（Blockbench 对话框宽度是像素值；Node 冒烟测试无 window，回退固定宽度）
+			width: Math.round((typeof window === 'undefined' ? 1400 : window.innerWidth) * 0.8),
 			buttons: [t('ctg.ok'), t('ctg.cancel')],
 			confirmIndex: 0,
 			cancelIndex: 1,
@@ -523,6 +625,22 @@ export function runGenerateWizard(): Promise<GenerateOutput | null> {
 				wireButtons(node, actions);
 				wireGaugeConversion(node);
 				renderStatus(state, node);
+				// Right column = the Blockbench form node: a "Parameters" column title on top (matches
+				// the "Track Parts" title of the left column) + the profiles widget at the bottom
+				const formNode = node.querySelector<HTMLElement>('.dialog_content > .form');
+				if (formNode) {
+					formNode.prepend(el('div', 'ctg-col-title', t('ctg.dialog.col_parameters')));
+					const widget = buildProfileWidget({
+						list: () => profileStore.list(),
+						apply: (name) => {
+							const p = profileStore.find(name);
+							if (p) applyGenerateValues(form(), dialogNode, p.values);
+						},
+						save: (name) => profileStore.put({ name, values: readGenerateValues(form(), dialogNode) }),
+						remove: (name) => profileStore.remove(name),
+					});
+					if (widget) formNode.append(widget);
+				}
 			},
 			onConfirm(formResult: any) {
 				const result = buildOutput(state, {
@@ -548,7 +666,19 @@ export function runGenerateWizard(): Promise<GenerateOutput | null> {
 
 		// Smoke-test hook: drives the part source actions + reads state directly (real Blockbench
 		// doesn't depend on it)
-		config._driver = { actions, getState: () => state };
+		config._driver = {
+			actions,
+			getState: () => state,
+			profiles: {
+				list: () => profileStore.list(),
+				save: (name) => profileStore.put({ name, values: readGenerateValues(form(), dialogNode) }),
+				apply: (name) => {
+					const p = profileStore.find(name);
+					if (p) applyGenerateValues(form(), dialogNode, p.values);
+				},
+				remove: (name) => profileStore.remove(name),
+			},
+		};
 
 		injectDialogStyles();
 		const dialog = new Dialog(config);

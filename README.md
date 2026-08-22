@@ -81,6 +81,7 @@ create_track_gen/
 ├── lang/                  # en.json / zh.json — i18n, editable without rebuild
 ├── test/                  # logic tests + smoke test + sample parts
 ├── README.md / README.zh-cn.md
+├── CHANGELOG.md / CHANGELOG.zh-cn.md
 └── package.json
 ```
 

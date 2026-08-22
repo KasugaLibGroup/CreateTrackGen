@@ -565,9 +565,10 @@ global.Outliner = {
 };
 
 // OBJ 导出器设置（Codecs.obj.compile 读取）
+const settingsValues = { obj_face_export_mode: 'both', model_export_scale: 16 };
 global.Settings = {
 	get(key) {
-		return { obj_face_export_mode: 'both', model_export_scale: 16 }[key];
+		return settingsValues[key];
 	},
 };
 
@@ -695,6 +696,20 @@ global.Texture = class Texture {
 Texture._counter = 0;
 
 const messageBoxQueue = [];
+// localStorage 桩：真实 Blockbench 用 localStorage 持久化（本版本没有 Blockbench.storage API），
+// 插件 profile 经它读写。按 key 存取字符串。
+const storageData = new Map();
+global.localStorage = {
+	getItem(key) {
+		return storageData.has(key) ? storageData.get(key) : null;
+	},
+	setItem(key, value) {
+		storageData.set(key, String(value));
+	},
+	removeItem(key) {
+		storageData.delete(key);
+	},
+};
 global.Blockbench = {
 	showMessageBox(options, cb) {
 		lastMessageBox = options;
@@ -1412,6 +1427,108 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	dlgE.config.onCancel();
 	Project.format = { id: 'java_block' };
 	console.log('   自由模型工作区 → 导出仅允许 OBJ ✓');
+
+	// ── 场景 F：生成对话框 —— 保存 / 跨对话框持久化 / 应用 / 删除 profile ──
+	// profile 只保存参数值（gauge/height/yoffset/name），不含零件/纹理源文件路径。
+	// 无 document 时 driver 的 save/apply 直接读写 config.form。
+	{
+		const pg = genAction.click();
+		const dlgPG = lastDialog;
+		assert(dlgPG, '❌ 生成 profile 测试应打开配置对话框');
+		const drvPG = dlgPG.config._driver;
+		assert(drvPG.profiles, '❌ 生成对话框应暴露 profiles 驱动钩子');
+		const formPG = dlgPG.config.form;
+		formPG.gauge.value = 20;
+		formPG.gauge_mm.value = 20;
+		formPG.gauge_inch.value = 20;
+		formPG.height.value = 3;
+		formPG.yoffset.value = 1;
+		formPG.name.value = 'profile_track';
+		drvPG.profiles.save('生成档A');
+		assert.strictEqual(drvPG.profiles.list().length, 1, '❌ 应保存 1 个生成 profile');
+		assert.strictEqual(drvPG.profiles.list()[0].values.gauge, 20, '❌ profile 应保存 gauge 20');
+		dlgPG.config.onCancel(); // 关闭对话框
+		// 重新打开对话框：应从 localStorage 读回已保存的 profile（跨对话框持久化）
+		const pg2 = genAction.click();
+		const dlgPG2 = lastDialog;
+		assert(dlgPG2, '❌ 重开生成对话框失败');
+		const drvPG2 = dlgPG2.config._driver;
+		const formPG2 = dlgPG2.config.form;
+		assert.strictEqual(drvPG2.profiles.list().length, 1, '❌ 重开对话框后应读回已保存的 profile（localStorage 持久化）');
+		assert.strictEqual(drvPG2.profiles.list()[0].name, '生成档A', '❌ 应读回同名 profile');
+		// 改动值后应用，应恢复保存值（mm/inch 从 gauge 重新推导）
+		formPG2.gauge.value = 99;
+		formPG2.name.value = 'xxx';
+		drvPG2.profiles.apply('生成档A');
+		assert.strictEqual(formPG2.gauge.value, 20, '❌ 应用生成 profile 应恢复 gauge');
+		assert.strictEqual(formPG2.height.value, 3, '❌ 应用生成 profile 应恢复 height');
+		assert.strictEqual(formPG2.yoffset.value, 1, '❌ 应用生成 profile 应恢复 yoffset');
+		assert.strictEqual(formPG2.name.value, 'profile_track', '❌ 应用生成 profile 应恢复 name');
+		assert(Math.abs(formPG2.gauge_mm.value - 1250) < 1e-6, `❌ 应用后 gauge_mm 应按 px 推导（20px→1250mm），实际 ${formPG2.gauge_mm.value}`);
+		assert(Math.abs(formPG2.gauge_inch.value - 1250 / 25.4) < 1e-3, `❌ 应用后 gauge_inch 应按 px 推导，实际 ${formPG2.gauge_inch.value}`);
+		// 同名覆盖（upsert，列表不增加）
+		formPG2.gauge.value = 30;
+		drvPG2.profiles.save('生成档A');
+		assert.strictEqual(drvPG2.profiles.list().length, 1, '❌ 同名保存应覆盖而非新增');
+		drvPG2.profiles.apply('生成档A');
+		assert.strictEqual(formPG2.gauge.value, 30, '❌ 覆盖保存后应用应取新值');
+		drvPG2.profiles.remove('生成档A');
+		assert.strictEqual(drvPG2.profiles.list().length, 0, '❌ 删除生成 profile 后列表应为空');
+		dlgPG2.config.onCancel();
+	}
+	console.log('   生成 profile → 保存参数值（不含源文件路径）、重开读回、应用恢复、同名覆盖、删除 ✓');
+
+	// ── 场景 G：导出对话框 —— 保存 / 跨对话框持久化 / 应用 / 删除 profile ──
+	// profile 保存 mode/namespace/trackId/loader/modelPath/纹理路径，不含导出根目录（目的路径）。
+	{
+		exportDir = path.join(require('os').tmpdir(), 'ctg-export-' + String(Math.random()).slice(2));
+		exportAction.click();
+		const dlgPE = lastDialog;
+		assert(dlgPE, '❌ 导出 profile 测试应打开导出配置对话框');
+		const drvPE = dlgPE.config._driver;
+		assert(drvPE.profiles, '❌ 导出对话框应暴露 profiles 驱动钩子');
+		drvPE.setMode('new_java');
+		drvPE.setNamespace('mymod');
+		drvPE.setTrackId('rail');
+		drvPE.setLoader('neoforge');
+		drvPE.setModelPath('custom/rail');
+		drvPE.profiles.save('导出档A');
+		assert.strictEqual(drvPE.profiles.list().length, 1, '❌ 应保存 1 个导出 profile');
+		const savedVal = drvPE.profiles.list()[0].values;
+		assert(!('root' in savedVal), '❌ 导出 profile 不应包含导出根目录（保存目的路径）');
+		assert(Array.isArray(savedVal.texturePaths) && savedVal.texturePaths.length > 0, '❌ 导出 profile 应保存纹理资源路径');
+		assert(savedVal.texturePaths.every((t) => typeof t.key === 'string' && typeof t.path === 'string'), '❌ 纹理路径应为 {key,path} 记录');
+		dlgPE.config.onCancel(); // 关闭对话框
+		// 重新打开对话框：应从 localStorage 读回已保存的导出 profile
+		exportAction.click();
+		const dlgPE2 = lastDialog;
+		assert(dlgPE2, '❌ 重开导出对话框失败');
+		const drvPE2 = dlgPE2.config._driver;
+		assert.strictEqual(drvPE2.profiles.list().length, 1, '❌ 重开对话框后应读回已保存的导出 profile（localStorage 持久化）');
+		assert.strictEqual(drvPE2.profiles.list()[0].name, '导出档A', '❌ 应读回同名导出 profile');
+		// 改动状态后应用，应恢复保存值
+		drvPE2.setMode('classic_java');
+		drvPE2.setNamespace('other');
+		drvPE2.setTrackId('other');
+		drvPE2.setLoader('forge');
+		drvPE2.setModelPath('other/path');
+		drvPE2.profiles.apply('导出档A');
+		const stPE = drvPE2.getState();
+		assert.strictEqual(stPE.mode, 'new_java', '❌ 应用导出 profile 应恢复 mode');
+		assert.strictEqual(stPE.namespace, 'mymod', '❌ 应用导出 profile 应恢复 namespace');
+		assert.strictEqual(stPE.trackId, 'rail', '❌ 应用导出 profile 应恢复 trackId');
+		assert.strictEqual(stPE.loader, 'neoforge', '❌ 应用导出 profile 应恢复 loader');
+		assert.strictEqual(stPE.modelPath, 'custom/rail', '❌ 应用导出 profile 应恢复 modelPath');
+		// 同名覆盖
+		drvPE2.setNamespace('mymod2');
+		drvPE2.profiles.save('导出档A');
+		drvPE2.profiles.apply('导出档A');
+		assert.strictEqual(drvPE2.getState().namespace, 'mymod2', '❌ 覆盖保存后应用应取新值');
+		drvPE2.profiles.remove('导出档A');
+		assert.strictEqual(drvPE2.profiles.list().length, 0, '❌ 删除导出 profile 后列表应为空');
+		dlgPE2.config.onCancel();
+	}
+	console.log('   导出 profile → 保存参数值（不含导出根目录）、重开读回、应用恢复、同名覆盖、删除 ✓');
 
 	// 卸载清理
 	unloadHooks.forEach((fn) => fn && fn());

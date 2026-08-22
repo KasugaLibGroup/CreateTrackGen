@@ -1555,4 +1555,66 @@ t('buildObjReferenceJson：自定义模组加载器前缀（forge→neoforge）'
 	assert.strictEqual(neo.loader, 'neoforge:obj', 'loader=neoforge 时 loader 应为 neoforge:obj');
 });
 
+// ── profile：命名的参数批次（ProfileStore）──
+t('ProfileStore：put/find/list/remove 基本读写', () => {
+	const mem = new Map();
+	const store = new L.ProfileStore(
+		{
+			save: (k, v) => (mem.set(k, String(v)), true),
+			load: (k) => mem.get(k) ?? null,
+			delete: (k) => mem.delete(k),
+		},
+		'ctg/test-profiles'
+	);
+	store.put({ name: 'A', values: { gauge: 20, height: 3, yoffset: 1, name: 't' } });
+	store.put({ name: 'B', values: { gauge: 25.6, height: 2, yoffset: 0, name: 't2' } });
+	assert.strictEqual(store.list().length, 2, '应保存 2 个 profile');
+	assert.strictEqual(store.find('A').values.gauge, 20, 'find 应返回对应 profile');
+	assert.strictEqual(store.find('missing'), undefined, '不存在的名字应返回 undefined');
+	store.remove('A');
+	assert.strictEqual(store.list().length, 1, 'remove 后应剩 1 个');
+	assert.strictEqual(store.list()[0].name, 'B', '剩余项应为 B');
+	store.remove('missing'); // 不抛错
+});
+
+t('ProfileStore：同名保存覆盖（upsert，保持位置）', () => {
+	const mem = new Map();
+	const store = new L.ProfileStore(
+		{
+			save: (k, v) => (mem.set(k, String(v)), true),
+			load: (k) => mem.get(k) ?? null,
+			delete: (k) => mem.delete(k),
+		},
+		'ctg/test-upsert'
+	);
+	store.put({ name: 'A', values: { v: 1 } });
+	store.put({ name: 'B', values: { v: 2 } });
+	store.put({ name: 'A', values: { v: 99 } });
+	const list = store.list();
+	assert.strictEqual(list.length, 2, '同名保存不应新增');
+	assert.strictEqual(list[0].name, 'A', 'A 应保持原位置');
+	assert.strictEqual(list[0].values.v, 99, '同名保存应覆盖值');
+});
+
+t('ProfileStore：空 / 损坏数据安全降级为空列表', () => {
+	const mem = new Map();
+	const store = new L.ProfileStore(
+		{
+			save: (k, v) => (mem.set(k, String(v)), true),
+			load: (k) => mem.get(k) ?? null,
+			delete: (k) => mem.delete(k),
+		},
+		'ctg/test-corrupt'
+	);
+	assert.deepStrictEqual(store.list(), [], '未保存时应为空列表');
+	mem.set('ctg/test-corrupt', 'not json');
+	assert.deepStrictEqual(store.list(), [], '损坏 JSON 应降级为空列表');
+	mem.set('ctg/test-corrupt', JSON.stringify({ not: 'array' }));
+	assert.deepStrictEqual(store.list(), [], '非数组数据应降级为空列表');
+	mem.set('ctg/test-corrupt', JSON.stringify([{ name: 'ok', values: { a: 1 } }, { bad: true }, null]));
+	const list = store.list();
+	assert.strictEqual(list.length, 1, '应过滤掉不含 name/values 的条目');
+	assert.strictEqual(list[0].name, 'ok', '保留合法条目');
+});
+
 console.log(`\n✅ logic.test.js 全部通过（${passed} 项）`);

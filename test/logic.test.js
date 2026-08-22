@@ -182,6 +182,12 @@ t('outputOffsetForFormat：java 平移 (8,8)，其他 (0,0)', () => {
 	assert.deepStrictEqual(L.outputOffsetForFormat(undefined), [0, 0, 0]);
 });
 
+t('shapeOutputOffset：轨道方向形状在任何输出格式都平移到 xz(8,8)（Create 兼容）', () => {
+	// 方向形状（非基础分组）在任何格式下都居中于 xz(8,8)：Java 画布对称点 = 自由模型导出时
+	// Create 自身轨道模型的中心。基础分组（tie/segment_left/segment_right）不偏移（见 buildBaseParts）。
+	assert.deepStrictEqual(L.shapeOutputOffset(), [8, 0, 8]);
+});
+
 // ── 纹理：.bbmodel 纹理提取与分辨率一致性 ──
 // 面的 texture 字段是纹理数组下标（不是 id），与 parseBbTextures 的 key 对齐
 const texBbModel = {
@@ -383,7 +389,7 @@ t('混合 cube + mesh：cubes 与 meshes 分开收集，mesh 不参与轨道形�
 	assert.strictEqual(part.meshes.length, 1);
 	const cfg = { gaugePx: 8, heightPx: 2, parts: { left: part, right: part, tie: part } };
 	const shapes = L.allShapes(cfg);
-	assert.strictEqual(shapes.length, 9, '含 mesh 时轨道形状仍照常生成（只用 cube 部分）');
+	assert.strictEqual(shapes.length, 11, '含 mesh 时轨道形状仍照常生成（只用 cube 部分）');
 });
 
 t('extractFromElements 识别 mesh 元素（hasMesh/meshes）', () => {
@@ -513,7 +519,7 @@ t('rotateMesh 绕枢轴烘焙旋转进顶点（world′ = pivot + R·(world−pi
 	assert.strictEqual(r2.origin, undefined, '烘焙后 origin 应置空');
 });
 
-t('含 mesh 零件的 allShapes：9 个方向形状都携带变换后的 mesh 几何', () => {
+t('含 mesh 零件的 allShapes：11 个方向形状都携带变换后的 mesh 几何', () => {
 	// 左/右轨 + 枕木都带 mesh（mesh-only 钢轨：0 cube，只贡献 mesh 几何）
 	const meshPart = {
 		cubes: [],
@@ -539,7 +545,7 @@ t('含 mesh 零件的 allShapes：9 个方向形状都携带变换后的 mesh �
 		parts: { left: meshPart, right: JSON.parse(JSON.stringify(meshPart)), tie: tieMeshPart },
 	};
 	const shapes = L.allShapes(cfg);
-	assert.strictEqual(shapes.length, 9);
+	assert.strictEqual(shapes.length, 11);
 	// 每个形状都有 mesh 几何，且每个 mesh 的面顶点引用都能解析到自身顶点
 	for (const s of shapes) {
 		assert(Array.isArray(s.meshes) && s.meshes.length > 0, `${s.id} 应携带 mesh 几何`);
@@ -919,33 +925,78 @@ t('ascending 抬升在整体 Y 偏移生效之后：整体偏移为负时仍保�
 	}
 });
 
-t('allShapes 只生成 9 种形状（多余形状由 blockstates 旋转表达）', () => {
+t('allShapes 只生成 11 种形状（多余形状由 blockstates 旋转表达）', () => {
 	const shapes = L.allShapes(testCfg);
 	const ids = shapes.map((s) => s.id);
-	assert.strictEqual(shapes.length, 9);
-	for (const id of ['x_ortho', 'diag', 'diag_2', 'ascending_south', 'teleport', 'cross_ortho', 'cross_diag', 'cross_d1_xo', 'cross_d2_xo']) {
+	assert.strictEqual(shapes.length, 11);
+	for (const id of ['x_ortho', 'diag', 'diag_2', 'ascending_south', 'teleport', 'cross_ortho', 'cross_diag', 'cross_d1_xo', 'cross_d2_xo', 'cross_d1_zo', 'cross_d2_zo']) {
 		assert(ids.includes(id), `缺少 ${id}`);
 	}
-	// 由 blockstates 旋转表达、不再生成：z_ortho / ascending_n/e/w / teleport_x / cross_d1_zo / cross_d2_zo
-	for (const id of ['z_ortho', 'ascending_north', 'ascending_east', 'ascending_west', 'teleport_x', 'cross_d1_zo', 'cross_d2_zo']) {
+	// 由 blockstates 旋转表达、不再生成：z_ortho / ascending_n/e/w / teleport_x
+	for (const id of ['z_ortho', 'ascending_north', 'ascending_east', 'ascending_west', 'teleport_x']) {
 		assert(!ids.includes(id), `不应再生成 ${id}`);
 	}
 	// 每种形状至少有 2 个 cube
 	for (const s of shapes) assert(s.cubes.length >= 2, `${s.id} 应有 >=2 个 cube`);
 });
 
-t('cross_d1_xo = 负对角 + Z 直轨，cross_d2_xo = 正对角 + Z 直轨（与参考相反命名）', () => {
+t('cross_d1_xo = 正对角 + X 直轨，cross_d2_xo = 负对角 + X 直轨（与参考 Kuayue 命名一致）', () => {
 	const cfgR = { gaugePx: 8, heightPx: 2, parts: { left: makeRotatedRail(), right: makeRotatedRail(), tie: makeTiePart() } };
 	const d1 = L.allShapes(cfgR).find((s) => s.id === 'cross_d1_xo');
 	const d2 = L.allShapes(cfgR).find((s) => s.id === 'cross_d2_xo');
-	// cross_d1_xo 应含负对角（-45°Y）旋转的钢轨
-	assert(d1.cubes.some((c) => c.rotation?.[1] === -45 || c.rotation?.[1] === 315), 'cross_d1_xo 应含 -45°（负对角）');
-	// cross_d2_xo 应含正对角（+45°Y）旋转的钢轨
-	assert(d2.cubes.some((c) => c.rotation?.[1] === 45), 'cross_d2_xo 应含 +45°（正对角）');
-	// 两者都含 Z 直轨（未旋转、沿 Z 的钢轨 from/to z 跨度大）
+	// cross_d1_xo 应含正对角（LINE mod180=45）
+	assert(d1.cubes.some((c) => (((c.rotation?.[1] ?? 0) % 180) + 180) % 180 === 45), 'cross_d1_xo 应含正对角');
+	// cross_d2_xo 应含负对角（LINE mod180=135）
+	assert(d2.cubes.some((c) => (((c.rotation?.[1] ?? 0) % 180) + 180) % 180 === 135), 'cross_d2_xo 应含负对角');
+	// 两者都含 X 直轨（[0,270,0] = 顺时针 90°）
 	for (const [name, s] of [['cross_d1_xo', d1], ['cross_d2_xo', d2]]) {
-		const straightRail = s.cubes.find((c) => !c.rotation && Math.abs(c.to[2] - c.from[2]) > Math.abs(c.to[0] - c.from[0]));
-		assert(straightRail, `${name} 应含 Z 直轨钢轨`);
+		assert(
+			s.cubes.some((c) => c.rotation?.[1] === 270 && c.rotation[0] === 0 && c.rotation[2] === 0),
+			`${name} 应含 X 直轨（[0,270,0]）`
+		);
+	}
+});
+
+t('cross_dN_zo = 基础「对角 + Z 直轨」不旋转；cross_dN_xo = 另一 zo 顺时针旋转 90°', () => {
+	const cfgR = { gaugePx: 8, heightPx: 2, parts: { left: makeRotatedRail(), right: makeRotatedRail(), tie: makeTiePart() } };
+	const all = L.allShapes(cfgR);
+	const d1xo = all.find((s) => s.id === 'cross_d1_xo');
+	const d1zo = all.find((s) => s.id === 'cross_d1_zo');
+	const d2xo = all.find((s) => s.id === 'cross_d2_xo');
+	const d2zo = all.find((s) => s.id === 'cross_d2_zo');
+	// zo = 基础交叉（对角 + Z 直轨），不旋转：cross_d1_zo 正对角、cross_d2_zo 负对角，直轨未旋转
+	assert(d1zo.cubes.some((c) => (((c.rotation?.[1] ?? 0) % 180) + 180) % 180 === 45), 'cross_d1_zo 应含正对角');
+	assert(d2zo.cubes.some((c) => (((c.rotation?.[1] ?? 0) % 180) + 180) % 180 === 135), 'cross_d2_zo 应含负对角');
+	for (const [name, s] of [['cross_d1_zo', d1zo], ['cross_d2_zo', d2zo]]) {
+		assert(
+			s.cubes.some((c) => !c.rotation && Math.abs(c.to[2] - c.from[2]) > Math.abs(c.to[0] - c.from[0])),
+			`${name} 应含 Z 直轨（未旋转）`
+		);
+	}
+	// xo = 另一 zo 顺时针旋转 90°（每个 cube 的 Y 旋转 −90，from/to 不变，枢轴统一）
+	for (const [zo, xo] of [[d2zo, d1xo], [d1zo, d2xo]]) {
+		assert(xo && zo, `缺少 ${xo?.id}`);
+		assert.strictEqual(zo.cubes.length, xo.cubes.length, `${xo.id} cube 数应与 ${zo.id} 一致`);
+		for (let i = 0; i < zo.cubes.length; i++) {
+			const z = zo.cubes[i];
+			const x = xo.cubes[i];
+			assert.deepStrictEqual(x.from, z.from, `${xo.id}[${i}] from 应不变`);
+			assert.deepStrictEqual(x.to, z.to, `${xo.id}[${i}] to 应不变`);
+			const zY = z.rotation?.[1] ?? 0;
+			const xY = x.rotation?.[1] ?? 0;
+			assert.strictEqual((((xY - zY) % 360) + 360) % 360, 270, `${xo.id}[${i}] Y 旋转应 −90（${zY}→${xY}）`);
+			assert(x.origin, `${xo.id}[${i}] 应设枢轴 origin`);
+		}
+	}
+	// 方向语义：cross_d1_xo 正对角 + X 直轨、cross_d2_xo 负对角 + X 直轨，
+	// 与 blockstates cr_pdx→cross_d1_xo / cr_ndx→cross_d2_xo 对应
+	assert(d1xo.cubes.some((c) => (((c.rotation?.[1] ?? 0) % 180) + 180) % 180 === 45), 'cross_d1_xo 应含正对角（对应 cr_pdx）');
+	assert(d2xo.cubes.some((c) => (((c.rotation?.[1] ?? 0) % 180) + 180) % 180 === 135), 'cross_d2_xo 应含负对角（对应 cr_ndx）');
+	for (const xo of [d1xo, d2xo]) {
+		assert(
+			xo.cubes.some((c) => c.rotation?.[1] === 270 && c.rotation[0] === 0 && c.rotation[2] === 0),
+			`${xo.id} 应含 X 直轨（[0,270,0]）`
+		);
 	}
 });
 
@@ -1256,7 +1307,7 @@ t('TRACK_MODEL_FILES 覆盖全部 16 形状 + 3 基础分组', () => {
 	for (const id of expected) assert(id in L.TRACK_MODEL_FILES, `缺少 ${id}`);
 });
 
-t('TRACK_MODEL_FILES 命名映射（ascending 只留 s 变体、teleport 只留 z、zo 类不导出）', () => {
+t('TRACK_MODEL_FILES 命名映射（ascending 只留 s 变体、teleport 只留 z、4 个交叉模型都导出）', () => {
 	assert.strictEqual(L.TRACK_MODEL_FILES.z_ortho, null, 'z_ortho 不导出（blockstate 用 x_ortho 旋转 90°）');
 	assert.strictEqual(L.TRACK_MODEL_FILES.x_ortho, 'x_ortho.json');
 	assert.strictEqual(L.TRACK_MODEL_FILES.diag, 'diag.json');
@@ -1266,9 +1317,9 @@ t('TRACK_MODEL_FILES 命名映射（ascending 只留 s 变体、teleport 只留 
 	assert.strictEqual(L.TRACK_MODEL_FILES.teleport, 'teleport.json');
 	assert.strictEqual(L.TRACK_MODEL_FILES.teleport_x, null, 'teleport_x 不导出（blockstate 用 y 旋转）');
 	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d1_xo, 'cross_d1_xo.json');
-	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d1_zo, null, 'cross_d1_zo 不导出（blockstate 旋转表达）');
+	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d1_zo, 'cross_d1_zo.json', 'cross_d1_zo 单独导出（对角 + Z 直轨）');
 	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d2_xo, 'cross_d2_xo.json');
-	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d2_zo, null, 'cross_d2_zo 不导出（blockstate 旋转表达）');
+	assert.strictEqual(L.TRACK_MODEL_FILES.cross_d2_zo, 'cross_d2_zo.json', 'cross_d2_zo 单独导出（对角 + Z 直轨）');
 	assert.strictEqual(L.TRACK_MODEL_FILES.tie, 'tie.json');
 	assert.strictEqual(L.TRACK_MODEL_FILES.segment_left, 'segment_left.json');
 	assert.strictEqual(L.TRACK_MODEL_FILES.segment_right, 'segment_right.json');
@@ -1285,7 +1336,8 @@ t('modelFileName / blockstatesFileName', () => {
 	assert.strictEqual(L.modelFileName('z_ortho'), null, 'z_ortho 不单独导出');
 	assert.strictEqual(L.modelFileName('x_ortho'), 'x_ortho.json');
 	assert.strictEqual(L.modelFileName('ascending_north'), null);
-	assert.strictEqual(L.modelFileName('cross_d1_zo'), null);
+	assert.strictEqual(L.modelFileName('cross_d1_zo'), 'cross_d1_zo.json');
+	assert.strictEqual(L.modelFileName('cross_d2_zo'), 'cross_d2_zo.json');
 	assert.strictEqual(L.modelFileName('不存在'), null);
 	assert.strictEqual(L.blockstatesFileName('standard'), 'standard_track.json');
 	assert.strictEqual(L.blockstatesFileName('track'), 'track_track.json');
@@ -1320,15 +1372,16 @@ t('buildBlockstates：变体组合 = (none + 18 形状) × turn × waterlogged',
 	assert.strictEqual(bs.variants['shape=aw,turn=false,waterlogged=false'].y, 90);
 	assert.strictEqual(bs.variants['shape=ts,turn=false,waterlogged=false'].y, undefined);
 	assert.strictEqual(bs.variants['shape=tw,turn=false,waterlogged=false'].y, 90);
-	// 交叉：xo / zo 方向都由 cross_d1_xo / cross_d2_xo 经 90° 旋转表达（匹配参考 blockstates）
+	// 交叉：4 个交叉模型各自直接引用（匹配参考 Kuayue standard blockstates，无需 y 旋转；
+	// d1=正对角、d2=负对角，zo=Z 直轨、xo=X 直轨）
 	assert.strictEqual(bs.variants['shape=cr_o,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_ortho');
 	assert.strictEqual(bs.variants['shape=cr_pdx,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d1_xo');
-	assert.strictEqual(bs.variants['shape=cr_pdx,turn=false,waterlogged=false'].y, 90);
-	assert.strictEqual(bs.variants['shape=cr_pdz,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d2_xo');
-	assert.strictEqual(bs.variants['shape=cr_pdz,turn=false,waterlogged=false'].y, 180);
+	assert.strictEqual(bs.variants['shape=cr_pdx,turn=false,waterlogged=false'].y, undefined);
+	assert.strictEqual(bs.variants['shape=cr_pdz,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d1_zo');
+	assert.strictEqual(bs.variants['shape=cr_pdz,turn=false,waterlogged=false'].y, undefined);
 	assert.strictEqual(bs.variants['shape=cr_ndx,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d2_xo');
-	assert.strictEqual(bs.variants['shape=cr_ndx,turn=false,waterlogged=false'].y, 270);
-	assert.strictEqual(bs.variants['shape=cr_ndz,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d1_xo');
+	assert.strictEqual(bs.variants['shape=cr_ndx,turn=false,waterlogged=false'].y, undefined);
+	assert.strictEqual(bs.variants['shape=cr_ndz,turn=false,waterlogged=false'].model, 'kuayue:block/track/standard/cross_d2_zo');
 	assert.strictEqual(bs.variants['shape=cr_ndz,turn=false,waterlogged=false'].y, undefined);
 	// 所有形状组合覆盖 turn/waterlogged
 	for (const turn of [false, true]) {

@@ -91,6 +91,20 @@ export function outputOffsetForFormat(format: string | undefined): Vec3 {
 }
 
 /**
+ * The horizontal (xz-plane) offset applied to the directional track shapes when building a new
+ * workspace. Create/Kuayue's track models are centered at (8,8) on the xz plane (the 0..16 Java canvas
+ * center): Java block/item models need it as the canvas symmetry point (the inverse of the import
+ * normalization), and the free/generic model ALSO gets it so its exported OBJ geometry matches Create's
+ * own models (x_ortho.obj, cross_d1_xo.obj … are centered at (8,8)). The curve base groups
+ * tie / segment_left / segment_right are NOT offset — buildBaseParts keeps them origin-centered,
+ * matching Create's segment_left.obj / segment_right.obj which center at x=0 (the game positions them
+ * at ±gauge/2 at render time).
+ */
+export function shapeOutputOffset(): Vec3 {
+	return [8, 0, 8];
+}
+
+/**
  * Whether a model format is the generic / free model. The free model's valid id is 'free'; 'generic'
  * is the legacy name that older versions used (and which resolves to the free model). A workspace of
  * this format keeps origin-centered, non-canvas-aligned geometry — the Java/Bedrock block formats

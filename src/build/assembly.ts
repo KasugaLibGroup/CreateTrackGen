@@ -4,7 +4,7 @@
  * API).
  */
 
-import { computeBBox, outputOffsetForFormat } from '../logic/parts';
+import { computeBBox, shapeOutputOffset } from '../logic/parts';
 import { bakePartAxisAligned, translate, translateMesh } from '../logic/transform';
 import { orientTiePerpendicular } from '../logic/generator';
 import type { CubeSpec, MeshSpec, PartModel, ShapeSpec, TrackConfig, Vec3 } from '../logic/types';
@@ -206,15 +206,17 @@ export function buildBaseParts(
 
 /**
  * Generates all shapes under a parent Group (named after the current workspace, default 'track'). Each
- * shape is one child Group (named by TrackShape id). When the output workspace is a Java Block/Item
- * model, the whole geometry is translated to xz (8,8) so the model stays symmetric about the canvas
- * center (same normalization convention as import). With textureByKey set, the parts' source textures
- * are applied to the corresponding cube faces (left/right/tie each get their own texture). Returns
- * the parent Group.
+ * shape is one child Group (named by TrackShape id). The origin-centered normalized geometry is
+ * translated to xz (8,8) for EVERY output workspace format: Java Block/Item needs it to stay symmetric
+ * about the 0..16 canvas center, and the free/generic model needs it too so its exported OBJ geometry
+ * matches Create Mod's own track models (centered at (8,8), see shapeOutputOffset). The curve base
+ * groups (tie / segment_left / segment_right) are NOT offset — buildBaseParts keeps them
+ * origin-centered like Create's segment_left.obj / segment_right.obj. With textureByKey set, the
+ * parts' source textures are applied to the corresponding cube faces (left/right/tie each get their
+ * own texture). Returns the parent Group.
  */
 export function buildAllShapes(shapes: ShapeSpec[], textureByKey?: Map<string, Texture>): Group {
-	const format = (Project as any).format?.id as string | undefined;
-	const offset = outputOffsetForFormat(format);
+	const offset = shapeOutputOffset();
 	// Parent group name = current workspace name (consistent with export lookup by workspace name),
 	// default 'track'
 	const parentName = String((Project as any).name || '').trim() || 'track';

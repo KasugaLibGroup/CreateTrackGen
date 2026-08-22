@@ -581,16 +581,67 @@ export function cross(
 	const idMap: Record<string, string> = {
 		ortho: 'cross_ortho',
 		diag: 'cross_diag',
-		pd_zo: 'cross_d2_xo',
-		nd_zo: 'cross_d1_xo',
+		// The pd_zo / nd_zo kinds are the "diagonal + Z straight" BASES that crossZo / crossXo derive
+		// the four crossing models from: cross_d1_zo = pd_zo, cross_d2_zo = nd_zo (unrotated);
+		// cross_d1_xo = nd_zo rotated 90° clockwise, cross_d2_xo = pd_zo rotated 90° clockwise.
+		pd_zo: 'cross_d1_zo',
+		nd_zo: 'cross_d2_zo',
 	};
 	const nameMap: Record<string, string> = {
 		ortho: shapeDisplay('cross_ortho', 'ctg.shape.desc.cross_ortho'),
 		diag: shapeDisplay('cross_diag', 'ctg.shape.desc.cross_diag'),
-		pd_zo: shapeDisplay('cross_d2_xo', 'ctg.shape.desc.cross_pd_zo'),
-		nd_zo: shapeDisplay('cross_d1_xo', 'ctg.shape.desc.cross_nd_zo'),
+		pd_zo: shapeDisplay('cross_d1_zo', 'ctg.shape.desc.cross_pd_zo'),
+		nd_zo: shapeDisplay('cross_d2_zo', 'ctg.shape.desc.cross_nd_zo'),
 	};
 	return { id: idMap[kind], name: nameMap[kind], cubes, meshes };
+}
+
+/**
+ * Rotates a whole crossing −90° (clockwise, viewed from above) about the crossing center. The 90° Y
+ * rotation is COMPOSED onto each cube's existing rotation rather than overwritten: the crossing's
+ * diagonal cubes already carry [0,±45,0] about the pivot and must become [0,±45−90,0], while the plain
+ * straight cubes get [0,270,0] (= −90) — overwriting with rotateY would collapse the diagonal into a
+ * straight. The direction is CLOCKWISE (standard R_y −90: +X → +Z); counterclockwise would land on
+ * the opposite diagonal. Mesh Y rotation is negated vs the cube field (see straight/rotateMesh note),
+ * so the baked mesh lands on the same diagonal as the rotated cube.
+ */
+function rotateCross90(cubes: CubeSpec[], meshes: MeshSpec[]): { cubes: CubeSpec[]; meshes: MeshSpec[] } {
+	const pivot = combinedCenter(cubes, meshes);
+	const rotated = cubes.map((c) => ({
+		...c,
+		origin: pivot,
+		rotation: [
+			c.rotation?.[0] ?? 0,
+			((c.rotation?.[1] ?? 0) + 270) % 360,
+			c.rotation?.[2] ?? 0,
+		] as Vec3,
+	}));
+	const rotatedMeshes = meshes.map((m) => rotateMesh(m, [0, 90, 0], pivot));
+	return { cubes: rotated, meshes: rotatedMeshes };
+}
+
+/**
+ * cross_dN_zo = the base "diagonal + Z straight" crossing, NOT rotated. Naming follows the reference
+ * Kuayue standard assets directly: `cross_d1_zo` = positive diagonal + Z straight (from `pd_zo`),
+ * `cross_d2_zo` = negative diagonal + Z straight (from `nd_zo`). All four crossing models are
+ * generated and exported; the blockstates reference each directly (see src/logic/export.ts
+ * BLOCKSTATE_SHAPES).
+ */
+function crossZo(cfg: TrackConfig, baseKind: 'nd_zo' | 'pd_zo', id: string, opts: GeneratorOptions): ShapeSpec {
+	const base = cross(cfg, baseKind, opts);
+	return { id, name: id, cubes: base.cubes, meshes: base.meshes ?? [] };
+}
+
+/**
+ * cross_dN_xo = the OTHER crossing's "diagonal + Z straight" base rotated 90° clockwise about the
+ * crossing center, producing the X-straight crossing (rotating flips the diagonal sign, so
+ * `cross_d1_xo` = positive diagonal + X straight comes from `nd_zo`, `cross_d2_xo` = negative
+ * diagonal + X straight from `pd_zo`), matching the reference Kuayue standard assets.
+ */
+function crossXo(cfg: TrackConfig, baseKind: 'nd_zo' | 'pd_zo', id: string, opts: GeneratorOptions): ShapeSpec {
+	const base = cross(cfg, baseKind, opts);
+	const { cubes, meshes } = rotateCross90(base.cubes, base.meshes ?? []);
+	return { id, name: id, cubes, meshes };
 }
 
 /** Shape definition table: the builder for every TrackShape */
@@ -617,13 +668,16 @@ function applyWholeOffset(cfg: TrackConfig, shape: ShapeSpec): ShapeSpec {
 }
 
 /**
- * Generates all 9 track shapes — only the models the blockstates actually reference; the rest are
+ * Generates all 11 track shapes — the models the blockstates actually reference; the rest are
  * expressed via rotation:
  *  - no z_ortho: shape=zo is expressed by rotating x_ortho 90°
  *  - no ascending_north/east/west: directions come from ascending_south via blockstate y rotations
  *  - no teleport_x: all four portal directions come from teleport (Z) via y rotations
- *  - no cross_d1_zo / cross_d2_zo: cross xo/zo directions come from cross_d1_xo / cross_d2_xo
- *    (both "diagonal + Z straight") via 90° rotations (see src/logic/export.ts BLOCKSTATE_SHAPES)
+ * All four crossing models are generated and exported, matching the reference Kuayue standard assets
+ * directly: cross_d1_* = positive diagonal, cross_d2_* = negative diagonal; the zo variants are the
+ * base "diagonal + Z straight" crossings (unrotated), the xo variants are them turned 90° clockwise
+ * (diagonal + X straight). The blockstates reference each directly (see src/logic/export.ts
+ * BLOCKSTATE_SHAPES).
  * The curve-rendering base groups tie / segment_left / segment_right are created separately by
  * buildBaseParts.
  */
@@ -636,8 +690,13 @@ export function allShapes(cfg: TrackConfig, opts: GeneratorOptions = {}): ShapeS
 		{ id: 'teleport', name: shapeDisplay('teleport', 'ctg.shape.desc.teleport'), build: (c) => teleport(c, 'z', opts) },
 		{ id: 'cross_ortho', name: shapeDisplay('cross_ortho', 'ctg.shape.desc.cross_ortho'), build: (c) => cross(c, 'ortho', opts) },
 		{ id: 'cross_diag', name: shapeDisplay('cross_diag', 'ctg.shape.desc.cross_diag'), build: (c) => cross(c, 'diag', opts) },
-		{ id: 'cross_d1_xo', name: 'cross_d1_xo', build: (c) => cross(c, 'nd_zo', opts) },
-		{ id: 'cross_d2_xo', name: 'cross_d2_xo', build: (c) => cross(c, 'pd_zo', opts) },
+		// d1 = positive diagonal, d2 = negative diagonal; zo = base "diagonal + Z straight" (no
+		// rotation), xo = the opposite base rotated 90° clockwise (diagonal + X straight) — matching
+		// the reference Kuayue standard assets
+		{ id: 'cross_d1_xo', name: 'cross_d1_xo', build: (c) => crossXo(c, 'nd_zo', 'cross_d1_xo', opts) },
+		{ id: 'cross_d2_xo', name: 'cross_d2_xo', build: (c) => crossXo(c, 'pd_zo', 'cross_d2_xo', opts) },
+		{ id: 'cross_d1_zo', name: 'cross_d1_zo', build: (c) => crossZo(c, 'pd_zo', 'cross_d1_zo', opts) },
+		{ id: 'cross_d2_zo', name: 'cross_d2_zo', build: (c) => crossZo(c, 'nd_zo', 'cross_d2_zo', opts) },
 	];
 	return defs.map((d) => applyWholeOffset(cfg, d.build(cfg)));
 }

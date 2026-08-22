@@ -879,10 +879,10 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	assert.notStrictEqual(confirmReturn, false, '❌ 配置合法时 onConfirm 不应阻止关闭');
 	await clickPromise;
 
-	// 生成的 cube / group 已创建（父分组 + 9 个形状子分组 + 3 个弯道基础分组；
-	// z_ortho / cross_d1_zo / cross_d2_zo / ascending_n/e/w / teleport_x 不再生成，由 blockstates 旋转表达）
+	// 生成的 cube / group 已创建（父分组 + 11 个形状子分组 + 3 个弯道基础分组；
+	// z_ortho / ascending_n/e/w / teleport_x 不再生成，由 blockstates 旋转表达）
 	assert(createdCubes.length > beforeCubes, '❌ 生成应创建 Cube');
-	assert(createdGroups.length >= 13, '❌ 应创建父分组 + 9 个形状子分组 + 3 个基础分组');
+	assert(createdGroups.length >= 15, '❌ 应创建父分组 + 11 个形状子分组 + 3 个基础分组');
 	// 弯道渲染基础分组：tie / segment_left / segment_right，都挂到轨道大组下
 	const parentGroup = createdGroups.find((g) => g.name === Project.name);
 	assert(parentGroup, `❌ 应创建轨道大组（名 = 工作区名「${Project.name}」）`);
@@ -893,9 +893,9 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 		assert(g.children.some((ch) => ch instanceof global.Cube), `❌ 基础分组 ${g.name} 应含 cube 元素`);
 		assert.strictEqual(g.parent, parentGroup, `❌ 基础分组 ${g.name} 应挂到轨道大组下`);
 	}
-	// 轨道大组下应有 9 个形状子分组 + 3 个基础分组
+	// 轨道大组下应有 11 个形状子分组 + 3 个基础分组
 	const parentChildrenGroups = parentGroup.children.filter((ch) => ch instanceof global.Group);
-	assert.strictEqual(parentChildrenGroups.length, 12, `❌ 轨道大组应有 9 形状 + 3 基础分组，实际 ${parentChildrenGroups.length}`);
+	assert.strictEqual(parentChildrenGroups.length, 14, `❌ 轨道大组应有 11 形状 + 3 基础分组，实际 ${parentChildrenGroups.length}`);
 	// 布局：高度 2，Y 偏移 0。
 	// segment_left / segment_right 钢轨：自身模型中心（java 的 (8,8) → 归一化原点）x 归零，
 	// 底面 = 2（轨道高度 + Y 偏移）、整体近 z 端靠在 xy 平面（z=0，模型一侧贴 z=0 平面）
@@ -1104,8 +1104,8 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 			`❌ 场景 C ${name} mesh 面数应为源 mesh 的 1 个（不应混入默认方块 6 面）`
 		);
 	}
-	// 9 个方向形状也应含 mesh（零件 mesh 几何被变换放进每个形状分组，不再只进基础分组）
-	const shapeNames = ['x_ortho', 'diag', 'diag_2', 'ascending_south', 'teleport', 'cross_ortho', 'cross_diag', 'cross_d1_xo', 'cross_d2_xo'];
+	// 11 个方向形状也应含 mesh（零件 mesh 几何被变换放进每个形状分组，不再只进基础分组）
+	const shapeNames = ['x_ortho', 'diag', 'diag_2', 'ascending_south', 'teleport', 'cross_ortho', 'cross_diag', 'cross_d1_xo', 'cross_d2_xo', 'cross_d1_zo', 'cross_d2_zo'];
 	const cParent = createdGroups.find((g) => g.name === Project.name);
 	assert(cParent, '❌ 场景 C 应有轨道大组');
 	for (const sn of shapeNames) {
@@ -1127,8 +1127,18 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	assert(flatUv.includes(8), `❌ 场景 C mesh 面 uv 应保留源模型的 [8,0]/[8,4] 值，实际 ${JSON.stringify(firstFace.uv)}`);
 	assert(flatUv.some((v) => v === 4), `❌ 场景 C mesh 面 uv 应保留源模型的 v=4 值，实际 ${JSON.stringify(firstFace.uv)}`);
 	assert(createdMeshes.length > 0, '❌ 应创建 Mesh 元素');
+	// 自由模型的方向形状被平移到 xz(8,8)（Create 兼容：Create 自身轨道模型居中于 (8,8)）——
+	// 源 mesh 世界 x 范围 [0,16]（中心 8，xMid=8），形状几何整体再加 (8,8)：方向形状 mesh 的
+	// x 中线应从 0 变成 8（基础分组不偏移，见下面 xs() 断言）
+	const xoVertXs = Object.values(firstShapeMesh.vertices).map((v) => v[0]);
+	const xoXCenter = (Math.min(...xoVertXs) + Math.max(...xoVertXs)) / 2;
+	assert(
+		Math.abs(xoXCenter - 8) < 1e-6,
+		`❌ 自由模型方向形状 x 中线应 = 8（Create 兼容 (8,8) 偏移），实际 ${xoXCenter}`
+	);
+	// 基础分组不应用 (8,8)：segment_left / segment_right mesh 顶点 x 中线仍为 0（上面 xs() 已断言）✓
 	meshImport = false;
-	console.log('   零件含 mesh 组 → 新工作区为自由模型，基础分组 + 9 个方向形状都含 mesh ✓');
+	console.log('   零件含 mesh 组 → 新工作区为自由模型，基础分组 + 11 个方向形状都含 mesh ✓');
 
 	// ── 场景 D：导出轨道模型（Create/Kuayue 命名规范 + blockstates）──
 	// 场景 A 生成的轨道大组（parentGroup）仍可引用；
@@ -1186,8 +1196,8 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 		return exportedFiles;
 	};
 	const modelFiles = (arr) => arr.map((f) => f.path).filter((p) => p.includes('/models/block/track/track/') && p.endsWith('.json'));
-	// z_ortho / cross_d1_zo / cross_d2_zo 不再单独导出：由 blockstates 90° 旋转表达
-	const ALL_MODELS = ['x_ortho.json', 'diag.json', 'diag_2.json', 'ascending.json', 'teleport.json', 'cross_ortho.json', 'cross_diag.json', 'cross_d1_xo.json', 'cross_d2_xo.json', 'tie.json', 'segment_left.json', 'segment_right.json'];
+	// z_ortho 不单独导出（由 blockstates 90° 旋转表达）；4 个交叉模型全部导出
+	const ALL_MODELS = ['x_ortho.json', 'diag.json', 'diag_2.json', 'ascending.json', 'teleport.json', 'cross_ortho.json', 'cross_diag.json', 'cross_d1_xo.json', 'cross_d1_zo.json', 'cross_d2_xo.json', 'cross_d2_zo.json', 'tie.json', 'segment_left.json', 'segment_right.json'];
 
 	// ── 模式 1：经典 Java（默认）──
 	let exported = await runExport('classic_java');
@@ -1195,8 +1205,7 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	for (const name of ALL_MODELS) assert(modelNames.includes(name), `❌ 经典应导出模型 ${name}`);
 	assert(!modelNames.includes('teleport_x.json'), '❌ 不应导出 teleport_x');
 	assert(!modelNames.includes('z_ortho.json'), '❌ 不应导出 z_ortho（blockstates 用 x_ortho 旋转表达）');
-	assert(!modelNames.includes('cross_d1_zo.json') && !modelNames.includes('cross_d2_zo.json'), '❌ 不应导出 cross_*_zo（blockstates 旋转表达）');
-	assert.strictEqual(modelNames.length, 12, `❌ 经典应导出 12 个模型文件，实际 ${modelNames.length}`);
+	assert.strictEqual(modelNames.length, 14, `❌ 经典应导出 14 个模型文件，实际 ${modelNames.length}`);
 	const xOrtho = exported.find((f) => f.path.endsWith('/models/block/track/track/x_ortho.json'));
 	const xJson = JSON.parse(xOrtho.content);
 	assert(Array.isArray(xJson.elements) && xJson.elements.length > 0, '❌ x_ortho.json 应含 elements');
@@ -1221,22 +1230,25 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	assert.strictEqual(bsJson.variants['shape=an,turn=false,waterlogged=false'].y, 180);
 	assert.strictEqual(bsJson.variants['shape=zo,turn=false,waterlogged=false'].model, 'kuayue:block/track/track/x_ortho', '❌ shape=zo 应由 x_ortho 旋转 90° 表达');
 	assert.strictEqual(bsJson.variants['shape=zo,turn=false,waterlogged=false'].y, 90);
-	assert.strictEqual(bsJson.variants['shape=cr_pdx,turn=false,waterlogged=false'].y, 90, '❌ cr_pdx 应旋转 90°');
-	assert.strictEqual(bsJson.variants['shape=cr_pdz,turn=false,waterlogged=false'].model, 'kuayue:block/track/track/cross_d2_xo');
-	assert.strictEqual(bsJson.variants['shape=cr_pdz,turn=false,waterlogged=false'].y, 180);
-	assert.strictEqual(bsJson.variants['shape=cr_ndx,turn=false,waterlogged=false'].y, 270);
-	assert.strictEqual(bsJson.variants['shape=cr_ndz,turn=false,waterlogged=false'].model, 'kuayue:block/track/track/cross_d1_xo');
+	assert.strictEqual(bsJson.variants['shape=cr_pdx,turn=false,waterlogged=false'].model, 'kuayue:block/track/track/cross_d1_xo');
+	assert.strictEqual(bsJson.variants['shape=cr_pdx,turn=false,waterlogged=false'].y, undefined, '❌ cr_pdx 应直接引用 cross_d1_xo（无需旋转）');
+	assert.strictEqual(bsJson.variants['shape=cr_pdz,turn=false,waterlogged=false'].model, 'kuayue:block/track/track/cross_d1_zo');
+	assert.strictEqual(bsJson.variants['shape=cr_pdz,turn=false,waterlogged=false'].y, undefined);
+	assert.strictEqual(bsJson.variants['shape=cr_ndx,turn=false,waterlogged=false'].model, 'kuayue:block/track/track/cross_d2_xo');
+	assert.strictEqual(bsJson.variants['shape=cr_ndx,turn=false,waterlogged=false'].y, undefined);
+	assert.strictEqual(bsJson.variants['shape=cr_ndz,turn=false,waterlogged=false'].model, 'kuayue:block/track/track/cross_d2_zo');
+	assert.strictEqual(bsJson.variants['shape=cr_ndz,turn=false,waterlogged=false'].y, undefined);
 	assert.strictEqual(Object.keys(bsJson.variants).length, (1 + 18) * 2 * 2);
 	// 每张纹理默认导出到 root/textures/block/track/track/（默认生成的纹理导出路径）
 	const texturePngs = exported.filter((f) => f.path.includes('/textures/block/track/track/') && f.path.endsWith('.png'));
 	assert(texturePngs.length > 0, '❌ 经典应导出纹理 PNG');
 	assert(texturePngs.every((f) => f.path.startsWith(exportDir + '/')), '❌ 纹理应写进导出根目录内');
-	console.log('   导出（经典 Java）→ 12 个模型 JSON + blockstates + 纹理 ✓');
+	console.log('   导出（经典 Java）→ 14 个模型 JSON + blockstates + 纹理 ✓');
 
 	// ── 模式 2：新 Java（1.21.11+）──
 	exported = await runExport('new_java');
 	modelNames = modelFiles(exported).map((p) => p.split('/').pop()).sort();
-	assert.strictEqual(modelNames.length, 12, '❌ 新格式应导出 12 个模型文件');
+	assert.strictEqual(modelNames.length, 14, '❌ 新格式应导出 14 个模型文件');
 	const xJsonNew = JSON.parse(exported.find((f) => f.path.endsWith('/models/block/track/track/x_ortho.json')).content);
 	assert.strictEqual(xJsonNew.format_version, '1.21.11', '❌ 新格式应有 format_version 1.21.11');
 	assert(Array.isArray(xJsonNew.elements) && xJsonNew.elements.length > 0, '❌ 新格式 x_ortho 应含元素');
@@ -1250,7 +1262,7 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	// 验证 OBJ 引用 JSON 的 loader 前缀跟随（"loader": "neoforge:obj"）
 	exported = await runExport('obj', 'neoforge');
 	const objPaths = exported.map((f) => f.path).filter((p) => p.includes('/models/block/track/track/') && p.endsWith('.obj'));
-	assert.strictEqual(objPaths.length, 12, `❌ OBJ 模式应导出 12 个 .obj，实际 ${objPaths.length}`);
+	assert.strictEqual(objPaths.length, 14, `❌ OBJ 模式应导出 14 个 .obj，实际 ${objPaths.length}`);
 	const xObj = exported.find((f) => f.path.endsWith('/models/block/track/track/x_ortho.obj'));
 	assert(xObj, '❌ 应导出 x_ortho.obj');
 	assert(xObj.content.startsWith('# Made in Blockbench'), '❌ OBJ 应有文件头');
@@ -1284,7 +1296,7 @@ console.log('   示例零件工具 → 在当前工作区摆放示例钢轨/枕�
 	assert.strictEqual(xRef.flip_v, true, '❌ OBJ 引用应有 flip_v: true');
 	// OBJ 模式仍写 blockstates
 	assert(exported.some((f) => f.path.endsWith('/blockstates/track_track.json')), '❌ OBJ 模式也应导出 blockstates');
-	console.log('   导出（全部 OBJ）→ 12 个单一合并网格 .obj/.mtl + 引用 JSON + blockstates ✓');
+	console.log('   导出（全部 OBJ）→ 14 个单一合并网格 .obj/.mtl + 引用 JSON + blockstates ✓');
 
 	// ── 模式 3b：mesh 零件形状的 OBJ 导出（合并网格含 mesh 顶点，world 烘焙）──
 	// 场景 C 的自由模型轨道大组（cParent）每个形状分组含 1 个源 mesh（8 顶点）。导出 segment_left

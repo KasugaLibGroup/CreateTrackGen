@@ -4,8 +4,9 @@
  * Node-testable.
  *
  * Naming follows assets/tracks/standard/:
- *  - models: models/block/track/{trackId}/{shape}.json (z_ortho / x_ortho / diag / diag_2 /
- *    ascending / teleport / cross_* / tie / segment_left / segment_right)
+ *  - models: models/block/track/{trackId}/{shape}.json (x_ortho / diag / diag_2 / ascending /
+ *    teleport / cross_ortho / cross_diag / cross_d1_xo / cross_d1_zo / cross_d2_xo / cross_d2_zo /
+ *    tie / segment_left / segment_right, 14 in total; z_ortho is expressed by rotating x_ortho 90°)
  *  - blockstates: blockstates/{trackId}_track.json (MC requires them directly under blockstates/)
  *  - textures: textures/block/track/{trackId}/{resourceName}.png, referenced in-model as
  *    {namespace}:block/track/{id}/{resourceName}
@@ -170,11 +171,13 @@ export const TRACK_MODEL_FILES: Record<string, string | null> = {
 	teleport_x: null,
 	cross_ortho: 'cross_ortho.json',
 	cross_diag: 'cross_diag.json',
-	// cross_d1_xo / cross_d2_xo are both "diagonal + Z straight"; zo directions are blockstate 90° rotations
+	// All four crossing models are exported: cross_d1_xo / cross_d2_xo are "diagonal + Z straight",
+	// cross_d1_zo / cross_d2_zo are the xo ones rotated 90° (diagonal + X straight). The blockstates
+	// reference each directly (no y rotation), matching the reference Kuayue standard assets.
 	cross_d1_xo: 'cross_d1_xo.json',
-	cross_d1_zo: null,
+	cross_d1_zo: 'cross_d1_zo.json',
 	cross_d2_xo: 'cross_d2_xo.json',
-	cross_d2_zo: null,
+	cross_d2_zo: 'cross_d2_zo.json',
 	tie: 'tie.json',
 	segment_left: 'segment_left.json',
 	segment_right: 'segment_right.json',
@@ -225,12 +228,15 @@ export function textureResourcePath(namespace: string, trackId: string, resName:
 
 /**
  * Track-shape blockstate shape key → model file name (+ y rotation).
- * Follows the Create/Kuayue track block convention (see assets/tracks/meter blockstates):
+ * Follows the Create/Kuayue track block convention (see assets/tracks/standard blockstates):
  *  - zo (Z straight) → x_ortho rotated 90° (z_ortho model not generated separately)
- *  - cross xo / zo directions are expressed via 90° rotations of cross_d1_xo / cross_d2_xo
- *    (both geometries are "diagonal + Z straight": cross_d1_xo = negative diagonal, cross_d2_xo = positive)
- *    cr_pdx→cross_d1_xo y:90, cr_pdz→cross_d2_xo y:180,
- *    cr_ndx→cross_d2_xo y:270, cr_ndz→cross_d1_xo y:0
+ *  - the four crossing shapes reference the four crossing models directly (no y rotation), matching
+ *    the reference Kuayue standard assets: cross_d1_* = positive diagonal, cross_d2_* = negative
+ *    diagonal; the zo variants are the base "diagonal + Z straight" crossings, the xo variants are
+ *    them turned 90° clockwise (diagonal + X straight):
+ *      cr_pdx → cross_d1_xo (positive diagonal + X straight), cr_pdz → cross_d1_zo (positive diagonal
+ *      + Z straight), cr_ndx → cross_d2_xo (negative diagonal + X straight), cr_ndz → cross_d2_zo
+ *      (negative diagonal + Z straight) (see generator.crossXo / crossZo / rotateCross90)
  */
 const BLOCKSTATE_SHAPES: { shape: string; model: string; y?: number }[] = [
 	{ shape: 'zo', model: 'x_ortho', y: 90 },
@@ -247,10 +253,10 @@ const BLOCKSTATE_SHAPES: { shape: string; model: string; y?: number }[] = [
 	{ shape: 'tw', model: 'teleport', y: 90 },
 	{ shape: 'cr_o', model: 'cross_ortho' },
 	{ shape: 'cr_d', model: 'cross_diag' },
-	{ shape: 'cr_pdx', model: 'cross_d1_xo', y: 90 },
-	{ shape: 'cr_pdz', model: 'cross_d2_xo', y: 180 },
-	{ shape: 'cr_ndx', model: 'cross_d2_xo', y: 270 },
-	{ shape: 'cr_ndz', model: 'cross_d1_xo' },
+	{ shape: 'cr_pdx', model: 'cross_d1_xo' },
+	{ shape: 'cr_pdz', model: 'cross_d1_zo' },
+	{ shape: 'cr_ndx', model: 'cross_d2_xo' },
+	{ shape: 'cr_ndz', model: 'cross_d2_zo' },
 ];
 
 /**
